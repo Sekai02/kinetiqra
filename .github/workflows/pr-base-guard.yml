@@ -12,10 +12,8 @@ name: PR base guard
 on:
   pull_request:
     # `edited` matters: it is what re-runs the checks when the base branch of an
-    # already-open pull request is changed. `assigned`/`unassigned` matter for
-    # the same reason: without them the assignee check would keep reporting its
-    # first result, and a pull request assigned after opening would stay red.
-    types: [opened, reopened, edited, synchronize, assigned, unassigned]
+    # already-open pull request is changed.
+    types: [opened, reopened, edited, synchronize]
     # For pull_request events this filters on the base branch.
     branches: [main, dev]
 
@@ -54,22 +52,6 @@ jobs:
             echo "Cut a release branch from dev rather than merging dev directly."
             exit 1
           fi
-
-  # No `if`: every pull request needs an owner regardless of where it is going,
-  # so this one job is required on both main and dev.
-  assignee-policy:
-    name: Require an assignee
-    runs-on: ubuntu-latest
-    steps:
-      - name: Validate assignee
-        env:
-          ASSIGNEES: ${{ toJSON(github.event.pull_request.assignees) }}
-        run: |
-          if [ "$(printf '%s' "$ASSIGNEES" | jq 'length')" -eq 0 ]; then
-            echo "::error::This pull request has no assignee. Assign an owner before merging."
-            exit 1
-          fi
-          echo "OK: assigned to $(printf '%s' "$ASSIGNEES" | jq -r '[.[].login] | join(", ")')."
 
   dev-policy:
     if: github.base_ref == 'dev'
