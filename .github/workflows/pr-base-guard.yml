@@ -23,7 +23,10 @@ permissions:
 
 jobs:
   guard:
-    name: main accepts only dev, release/* or hotfix/*
+    # Branch protection identifies a required check by this name, so it must not
+    # mention the allowed branches: that list will change, and renaming the job
+    # afterwards would leave protection waiting on a check that no longer exists.
+    name: Enforce merge policy for main
     runs-on: ubuntu-latest
     steps:
       - name: Validate source branch
