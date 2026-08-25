@@ -38,16 +38,20 @@ jobs:
         env:
           HEAD_REF: ${{ github.head_ref }}
         run: |
-          case "$HEAD_REF" in
-            dev|release/*|hotfix/*)
-              echo "OK: '$HEAD_REF' may target main."
-              ;;
-            *)
-              echo "::error::Pull requests into 'main' must come from 'dev', 'release/*' or 'hotfix/*'. Got '$HEAD_REF'."
-              echo "Retarget this pull request to 'dev'."
-              exit 1
-              ;;
-          esac
+          # dev is deliberately absent: reaching main means cutting a release
+          # branch from dev, so that what ships can be frozen and stabilised
+          # while dev keeps taking work.
+          SLUG='[a-z0-9]+(-[a-z0-9]+)*'
+
+          if printf '%s' "$HEAD_REF" | grep -qE "^release/[0-9]+\.[0-9]+\.[0-9]+$"; then
+            echo "OK: '$HEAD_REF' is a release branch."
+          elif printf '%s' "$HEAD_REF" | grep -qE "^hotfix/$SLUG$"; then
+            echo "OK: '$HEAD_REF' is a hotfix branch."
+          else
+            echo "::error::Pull requests into 'main' must come from 'release/X.Y.Z' or 'hotfix/<slug>'. Got '$HEAD_REF'."
+            echo "Cut a release branch from dev rather than merging dev directly."
+            exit 1
+          fi
 
   dev-policy:
     if: github.base_ref == 'dev'
