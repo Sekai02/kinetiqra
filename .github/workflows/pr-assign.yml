@@ -1,0 +1,63 @@
+name: PR assign
+
+# Assigns the author to their own pull request, so that every pull request has
+# an owner without anyone having to remember. The companion check in
+# pr-base-guard.yml is what makes an assignee mandatory; this workflow only
+# saves the manual step.
+#
+# This uses pull_request_target rather than pull_request on purpose: for pull
+# requests opened from a fork, the pull_request token is read-only and the
+# assignment would fail.
+#
+# Consequence worth knowing: pull_request_target only triggers when the workflow
+# file exists on the repository's default branch, and it always runs the copy
+# found there — not the one on the pull request's base branch. Changes to this
+# file therefore take effect only once they reach main.
+#
+# pull_request_target is dangerous when a workflow checks out and executes code
+# from the pull request, because that code would run with a writable token.
+# This one never checks anything out — it only calls the API — which is what
+# makes it safe here. Do not add a checkout step.
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  assign-author:
+    name: Assign the pull request author
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assign the author
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          REPO: ${{ github.repository }}
+        run: |
+          # The REST endpoint is used rather than `gh pr edit --add-assignee`,
+          # which goes through GraphQL and currently fails on this repository.
+          assigned() {
+            gh api "repos/$REPO/issues/$PR" --jq '.assignees | length'
+          }
+
+          if [ "$(assigned)" -gt 0 ]; then
+            echo "Already assigned; leaving it alone."
+            exit 0
+          fi
+
+          # GitHub silently drops assignees it considers invalid, so verify the
+          # assignment actually took rather than trusting the exit status. An
+          # outside contributor without repository access may need a maintainer
+          # to assign them by hand.
+          gh api -X POST "repos/$REPO/issues/$PR/assignees" \
+            -f "assignees[]=$AUTHOR" >/dev/null 2>&1 || true
+
+          if [ "$(assigned)" -gt 0 ]; then
+            echo "Assigned to $AUTHOR."
+          else
+            echo "::warning::Could not assign '$AUTHOR'; a maintainer must assign this pull request manually."
+          fi
