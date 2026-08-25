@@ -1,0 +1,185 @@
+name: PR title and labels
+
+# Validates the pull request title and derives its labels, in one job.
+#
+# Both halves live together for the same reason as the assignee check: labels
+# applied with GITHUB_TOKEN do not start new workflow runs, so a separate
+# labelling step could never report a fresh result.
+#
+# The title uses the same vocabulary as branches, commits and labels:
+#
+#     <type>: <summary>
+#     <type>(<area>): <summary>
+#
+# The type label always comes from the title. The area labels come from the
+# changed files, which can name several modules at once and cannot be forgotten;
+# the title scope is only a fallback for when the changed files touch no module
+# at all — tooling, documentation, build files. When neither yields an area,
+# existing area labels are left alone so that manual labelling survives.
+#
+# This uses pull_request_target because labelling requires a writable token,
+# which pull requests from forks do not get. As with the other workflow of this
+# kind, it only runs the copy of this file found on the default branch, and it
+# must never check out the pull request's code.
+
+on:
+  pull_request_target:
+    # `edited` re-runs this when the title changes; `synchronize` when new
+    # commits change which files the pull request touches.
+    types: [opened, reopened, edited, synchronize]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  title:
+    name: Ensure the pull request title is well formed
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate the title and apply its labels
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          TYPES='feat fix refactor perf docs build test chore'
+          AREAS='core math geom scene anim io render app'
+
+          fail() {
+            echo "::error::$1"
+            echo ""
+            echo "Expected '<type>: <summary>' or '<type>(<area>): <summary>'."
+            echo "  types: $TYPES"
+            echo "  areas: $AREAS"
+            echo "The summary must start in lower case and must not end with a full stop."
+            exit 1
+          }
+
+          contains() {
+            # $1 = needle, $2 = space separated haystack
+            case " $2 " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+          }
+
+          # ---- title --------------------------------------------------------
+
+          case "$TITLE" in
+            *": "*) ;;
+            *) fail "Title '$TITLE' has no '<type>: ' prefix." ;;
+          esac
+
+          prefix="${TITLE%%:*}"
+          summary="${TITLE#*:}"
+          summary="${summary# }"
+
+          type="$prefix"
+          scope=""
+
+          case "$prefix" in
+            *"("*")")
+              type="${prefix%%(*}"
+              scope="${prefix#*(}"
+              scope="${scope%)}"
+              ;;
+            *"("*)
+              fail "Title '$TITLE' has an unclosed area parenthesis."
+              ;;
+          esac
+
+          contains "$type" "$TYPES" || fail "'$type' is not an allowed type."
+          if [ -n "$scope" ]; then
+            contains "$scope" "$AREAS" || fail "'$scope' is not an allowed area."
+          fi
+
+          [ -n "$summary" ] || fail "Title '$TITLE' has an empty summary."
+
+          case "$summary" in
+            [a-z0-9]*) ;;
+            *) fail "The summary must start in lower case." ;;
+          esac
+
+          case "$summary" in
+            *.) fail "The summary must not end with a full stop." ;;
+          esac
+
+          echo "Title OK: type='$type' scope='${scope:-none}'"
+
+          # ---- areas from the changed files ---------------------------------
+          #
+          # Only src/<module>/... and tests/<module>/... name a module. Anything
+          # at the repository root, or under .github, cmake, docs, assets or
+          # external, deliberately maps to nothing.
+
+          from_files=$(
+            gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename' \
+              | sed -nE 's#^(src|tests)/([a-z]+)/.*#\2#p' \
+              | sort -u
+          )
+
+          inferred=""
+          for candidate in $from_files; do
+            contains "$candidate" "$AREAS" && inferred="$inferred $candidate"
+          done
+          inferred="${inferred# }"
+
+          if [ -n "$inferred" ]; then
+            area_source="files"
+            want_areas="$inferred"
+            if [ -n "$scope" ] && [ "$scope" != "$inferred" ]; then
+              echo "::notice::Title scope '$scope' ignored: the changed files are authoritative and name '$inferred'."
+            fi
+          elif [ -n "$scope" ]; then
+            area_source="title"
+            want_areas="$scope"
+            echo "The changed files name no module; falling back to the title scope '$scope'."
+          else
+            area_source="none"
+            want_areas=""
+            echo "No area could be determined from the changed files or the title; leaving area labels alone."
+          fi
+
+          # Greppable marker: if this never reports 'title', the fallback is
+          # dead weight and the scope could be dropped from the title format.
+          echo "AREA_SOURCE=$area_source areas='${want_areas:-none}'"
+
+          # ---- labels -------------------------------------------------------
+
+          current() {
+            gh api "repos/$REPO/issues/$PR/labels" --jq '.[].name'
+          }
+
+          remove_label() {
+            encoded=$(printf '%s' "$1" | jq -sRr @uri)
+            gh api -X DELETE "repos/$REPO/issues/$PR/labels/$encoded" >/dev/null 2>&1 || true
+            echo "  - removed '$1'"
+          }
+
+          add_label() {
+            gh api -X POST "repos/$REPO/issues/$PR/labels" -f "labels[]=$1" >/dev/null 2>&1 \
+              && echo "  + added '$1'" \
+              || echo "::warning::Could not add label '$1'; does it exist in this repository?"
+          }
+
+          want_type="type: $type"
+          existing=$(current)
+
+          echo "$existing" | while IFS= read -r label; do
+            [ -n "$label" ] || continue
+            case "$label" in
+              "type: "*)
+                [ "$label" = "$want_type" ] || remove_label "$label"
+                ;;
+              "area: "*)
+                # Only prune area labels when we actually determined some.
+                if [ -n "$want_areas" ]; then
+                  contains "${label#area: }" "$want_areas" || remove_label "$label"
+                fi
+                ;;
+            esac
+          done
+
+          echo "$existing" | grep -qxF "$want_type" || add_label "$want_type"
+
+          for a in $want_areas; do
+            echo "$existing" | grep -qxF "area: $a" || add_label "area: $a"
+          done
