@@ -1,0 +1,35 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "kinetiqra",
+  "version": "0.1.0",
+  "description": "A code-first 3D humanoid avatar and animation engine.",
+  "homepage": "https://github.com/Sekai02/kinetiqra",
+  "license": "MIT",
+  "dependencies": [
+    "glfw3",
+    "glm",
+    "glad",
+    {
+      "name": "imgui",
+      "features": [
+        "docking-experimental",
+        "glfw-binding",
+        "opengl3-binding"
+      ]
+    },
+    "imguizmo",
+    "fastgltf",
+    "stb"
+  ],
+  "features": {
+    "tests": {
+      "description": "Build the unit test suite",
+      "dependencies": [
+        "doctest"
+      ]
+    }
+  },
+  "default-features": [
+    "tests"
+  ]
+}
