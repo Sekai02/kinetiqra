@@ -7,8 +7,12 @@ name: PR assign
 #
 # This uses pull_request_target rather than pull_request on purpose: for pull
 # requests opened from a fork, the pull_request token is read-only and the
-# assignment would fail. pull_request_target runs with the base repository's
-# token instead.
+# assignment would fail.
+#
+# Consequence worth knowing: pull_request_target only triggers when the workflow
+# file exists on the repository's default branch, and it always runs the copy
+# found there — not the one on the pull request's base branch. Changes to this
+# file therefore take effect only once they reach main.
 #
 # pull_request_target is dangerous when a workflow checks out and executes code
 # from the pull request, because that code would run with a writable token.
@@ -34,7 +38,13 @@ jobs:
           AUTHOR: ${{ github.event.pull_request.user.login }}
           REPO: ${{ github.repository }}
         run: |
-          if [ "$(gh pr view "$PR" --repo "$REPO" --json assignees --jq '.assignees | length')" -gt 0 ]; then
+          # The REST endpoint is used rather than `gh pr edit --add-assignee`,
+          # which goes through GraphQL and currently fails on this repository.
+          assigned() {
+            gh api "repos/$REPO/issues/$PR" --jq '.assignees | length'
+          }
+
+          if [ "$(assigned)" -gt 0 ]; then
             echo "Already assigned; leaving it alone."
             exit 0
           fi
@@ -43,9 +53,10 @@ jobs:
           # assignment actually took rather than trusting the exit status. An
           # outside contributor without repository access may need a maintainer
           # to assign them by hand.
-          gh pr edit "$PR" --repo "$REPO" --add-assignee "$AUTHOR" || true
+          gh api -X POST "repos/$REPO/issues/$PR/assignees" \
+            -f "assignees[]=$AUTHOR" >/dev/null 2>&1 || true
 
-          if [ "$(gh pr view "$PR" --repo "$REPO" --json assignees --jq '.assignees | length')" -gt 0 ]; then
+          if [ "$(assigned)" -gt 0 ]; then
             echo "Assigned to $AUTHOR."
           else
             echo "::warning::Could not assign '$AUTHOR'; a maintainer must assign this pull request manually."
