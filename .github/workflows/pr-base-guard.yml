@@ -1,31 +1,38 @@
 name: PR base guard
 
-# Keeps main reachable only through the release path. Branch protection can
-# require that a pull request exists, but not that it comes from the right
-# place, so this check closes that gap.
+# Keeps main and dev reachable only through the intended path. Branch protection
+# can require that a pull request exists, but not that it comes from the right
+# place or that the branch is named correctly, so these checks close that gap.
 #
 # Note: for pull_request events GitHub runs the workflow as it exists on the
 # source branch, so this file can be removed in a branch to stop it running.
-# Marking the job as a required status check is what makes it binding — a
+# Marking each job as a required status check is what makes it binding — a
 # required check that never reports leaves the pull request blocked.
 
 on:
   pull_request:
-    # `edited` matters: it is what re-runs the check when the base branch of an
-    # already-open pull request is changed to main.
-    types: [opened, reopened, edited, synchronize]
-    # For pull_request events this filters on the base branch, so the job never
-    # runs on pull requests into dev.
-    branches: [main]
+    # `edited` matters: it is what re-runs the checks when the base branch of an
+    # already-open pull request is changed. `assigned`/`unassigned` matter for
+    # the same reason: without them the assignee check would keep reporting its
+    # first result, and a pull request assigned after opening would stay red.
+    types: [opened, reopened, edited, synchronize, assigned, unassigned]
+    # For pull_request events this filters on the base branch.
+    branches: [main, dev]
 
 permissions:
   contents: read
 
 jobs:
-  guard:
-    # Branch protection identifies a required check by this name, so it must not
-    # mention the allowed branches: that list will change, and renaming the job
-    # afterwards would leave protection waiting on a check that no longer exists.
+  # One job per target branch, each gated on the base. A job skipped by its `if`
+  # is irrelevant to the other branch, because required checks are configured
+  # per-branch: main requires only its own job, dev only its own.
+  #
+  # Branch protection identifies a required check by the job's display name, so
+  # these names must not mention the allowed branches: those lists will change,
+  # and renaming a job protection already requires would leave it waiting on a
+  # check that no longer exists.
+  main-policy:
+    if: github.base_ref == 'main'
     name: Enforce merge policy for main
     runs-on: ubuntu-latest
     steps:
@@ -33,13 +40,61 @@ jobs:
         env:
           HEAD_REF: ${{ github.head_ref }}
         run: |
-          case "$HEAD_REF" in
-            dev|release/*|hotfix/*)
-              echo "OK: '$HEAD_REF' may target main."
-              ;;
-            *)
-              echo "::error::Pull requests into 'main' must come from 'dev', 'release/*' or 'hotfix/*'. Got '$HEAD_REF'."
-              echo "Retarget this pull request to 'dev'."
-              exit 1
-              ;;
-          esac
+          # dev is deliberately absent: reaching main means cutting a release
+          # branch from dev, so that what ships can be frozen and stabilised
+          # while dev keeps taking work.
+          SLUG='[a-z0-9]+(-[a-z0-9]+)*'
+
+          if printf '%s' "$HEAD_REF" | grep -qE "^release/[0-9]+\.[0-9]+\.[0-9]+$"; then
+            echo "OK: '$HEAD_REF' is a release branch."
+          elif printf '%s' "$HEAD_REF" | grep -qE "^hotfix/$SLUG$"; then
+            echo "OK: '$HEAD_REF' is a hotfix branch."
+          else
+            echo "::error::Pull requests into 'main' must come from 'release/X.Y.Z' or 'hotfix/<slug>'. Got '$HEAD_REF'."
+            echo "Cut a release branch from dev rather than merging dev directly."
+            exit 1
+          fi
+
+  # No `if`: every pull request needs an owner regardless of where it is going,
+  # so this one job is required on both main and dev.
+  assignee-policy:
+    name: Require an assignee
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate assignee
+        env:
+          ASSIGNEES: ${{ toJSON(github.event.pull_request.assignees) }}
+        run: |
+          if [ "$(printf '%s' "$ASSIGNEES" | jq 'length')" -eq 0 ]; then
+            echo "::error::This pull request has no assignee. Assign an owner before merging."
+            exit 1
+          fi
+          echo "OK: assigned to $(printf '%s' "$ASSIGNEES" | jq -r '[.[].login] | join(", ")')."
+
+  dev-policy:
+    if: github.base_ref == 'dev'
+    name: Enforce merge policy for dev
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate source branch
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          # Branch types mirror the commit types and the repository labels, so a
+          # single vocabulary covers branch, commit and issue.
+          TYPES='feat|fix|refactor|perf|docs|build|test|chore'
+          SLUG='[a-z0-9]+(-[a-z0-9]+)*'
+
+          # release/* and hotfix/* are accepted here because gitflow merges them
+          # into main *and* back into dev; rejecting them would block the
+          # back-merge that closes the release cycle.
+          if printf '%s' "$HEAD_REF" | grep -qE "^($TYPES)/$SLUG$"; then
+            echo "OK: '$HEAD_REF' is a well-formed working branch."
+          elif printf '%s' "$HEAD_REF" | grep -qE "^release/[0-9]+\.[0-9]+\.[0-9]+$"; then
+            echo "OK: '$HEAD_REF' is a release back-merge."
+          elif printf '%s' "$HEAD_REF" | grep -qE "^hotfix/$SLUG$"; then
+            echo "OK: '$HEAD_REF' is a hotfix back-merge."
+          else
+            echo "::error::Invalid branch name '$HEAD_REF'. Use <type>/<kebab-case-slug> where type is one of: feat, fix, refactor, perf, docs, build, test, chore. Also accepted: release/X.Y.Z and hotfix/<slug>."
+            exit 1
+          fi
