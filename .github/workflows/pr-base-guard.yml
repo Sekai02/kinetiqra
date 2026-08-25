@@ -1,0 +1,42 @@
+name: PR base guard
+
+# Keeps main reachable only through the release path. Branch protection can
+# require that a pull request exists, but not that it comes from the right
+# place, so this check closes that gap.
+#
+# Note: for pull_request events GitHub runs the workflow as it exists on the
+# source branch, so this file can be removed in a branch to stop it running.
+# Marking the job as a required status check is what makes it binding — a
+# required check that never reports leaves the pull request blocked.
+
+on:
+  pull_request:
+    # `edited` matters: it is what re-runs the check when the base branch of an
+    # already-open pull request is changed to main.
+    types: [opened, reopened, edited, synchronize]
+    # For pull_request events this filters on the base branch, so the job never
+    # runs on pull requests into dev.
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: main accepts only dev, release/* or hotfix/*
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate source branch
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          case "$HEAD_REF" in
+            dev|release/*|hotfix/*)
+              echo "OK: '$HEAD_REF' may target main."
+              ;;
+            *)
+              echo "::error::Pull requests into 'main' must come from 'dev', 'release/*' or 'hotfix/*'. Got '$HEAD_REF'."
+              echo "Retarget this pull request to 'dev'."
+              exit 1
+              ;;
+          esac
