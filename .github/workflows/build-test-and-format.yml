@@ -1,0 +1,93 @@
+name: Build, test and format
+
+# Compiles the project, runs the tests and checks the formatting, so that a
+# pull request cannot break the build or the style by being merged.
+#
+# Unlike the pull_request_target workflows in this repository, this one runs the
+# copy on the branch under test, which is what makes it useful: it validates the
+# code as proposed. A branch could remove this file to stop it running, and the
+# answer to that is the same as everywhere else here, a required status check
+# that never reports leaves the pull request blocked.
+#
+# The job names below are what branch protection matches on. Do not rename them
+# without updating the required checks, or protection will wait forever on a
+# check that no longer exists.
+
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    branches: [main, dev]
+
+# A new push supersedes the run already in flight for the same branch.
+concurrency:
+  group: build-test-and-format-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    name: Check formatting
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned to the same major version the project documents, because
+      # clang-format output differs between releases and an unpinned version
+      # would fail on code that is correct locally.
+      - name: Install clang-format
+        run: sudo apt-get install -y --no-install-recommends clang-format-18
+
+      - name: Check formatting
+        run: |
+          clang-format-18 --version
+          files=$(git ls-files '*.cpp' '*.hpp')
+          if [ -z "$files" ]; then
+            echo "No sources to check."
+            exit 0
+          fi
+          clang-format-18 --dry-run --Werror $files
+
+  build:
+    name: Build and test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # Mirrors docs/PREREQUISITES.md. The autotools packages are needed by
+      # some vcpkg ports rather than by kinetiqra itself.
+      - name: Install the system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build pkg-config \
+            autoconf autoconf-archive automake libtool \
+            libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libxi-dev libxext-dev
+
+      # vcpkg's own binary cache provider for Actions was removed, so the
+      # install tree is cached directly, which is the method GitHub endorses.
+      # The presets already keep that tree outside the build directory.
+      - name: Cache the vcpkg install tree
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/vcpkg-installed/kinetiqra
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+
+      # vcpkg ships with the runner image, so there is nothing to clone.
+      - name: Point the presets at the preinstalled vcpkg
+        run: echo "VCPKG_ROOT=$VCPKG_INSTALLATION_ROOT" >> "$GITHUB_ENV"
+
+      - name: Configure
+        run: cmake --preset debug
+
+      # The debug preset treats warnings as errors, which is the point of
+      # building that one here.
+      - name: Build
+        run: cmake --build --preset debug
+
+      # The tests are pure and create no window, so they need no display.
+      - name: Test
+        run: ctest --preset debug
