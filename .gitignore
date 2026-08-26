@@ -1,6 +1,9 @@
 # Scratch
 pr.txt
 
+# Written at runtime by Dear ImGui: the local docking layout, not project state
+imgui.ini
+
 # Build
 build/
 out/
