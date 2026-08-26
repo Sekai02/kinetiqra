@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 470 200" width="470" height="200"
+     font-family="ui-sans-serif, system-ui, sans-serif" font-size="12">
+  <defs>
+    <marker id="c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#8b949e"/>
+    </marker>
+  </defs>
+
+  <!-- tool -->
+  <rect x="6" y="70" width="86" height="40" rx="4" fill="none" stroke="#8b949e" stroke-width="1.2"/>
+  <text x="49" y="88" fill="#8b949e" text-anchor="middle">panel</text>
+  <text x="49" y="103" fill="#8b949e" text-anchor="middle">or tool</text>
+
+  <!-- forbidden direct mutation -->
+  <path d="M92 128 C 200 175, 300 175, 386 132" fill="none" stroke="#f85149"
+        stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#c)"/>
+  <text x="239" y="192" fill="#f85149" text-anchor="middle" font-size="11">never mutates the scene directly</text>
+  <line x1="228" y1="160" x2="250" y2="176" stroke="#f85149" stroke-width="1.4"/>
+  <line x1="250" y1="160" x2="228" y2="176" stroke="#f85149" stroke-width="1.4"/>
+
+  <!-- command -->
+  <line x1="92" y1="90" x2="150" y2="90" stroke="#8b949e" stroke-width="1.2" marker-end="url(#c)"/>
+  <text x="121" y="82" fill="#8b949e" text-anchor="middle" font-size="11">issues</text>
+
+  <rect x="158" y="60" width="120" height="60" rx="4" fill="none" stroke="#8b949e" stroke-width="1.2"/>
+  <text x="218" y="80" fill="#8b949e" text-anchor="middle" font-weight="600">command</text>
+  <text x="218" y="98" fill="#3fb950" text-anchor="middle" font-size="11">do()</text>
+  <text x="218" y="112" fill="#d29922" text-anchor="middle" font-size="11">undo()</text>
+
+  <!-- scene -->
+  <line x1="278" y1="80" x2="336" y2="80" stroke="#3fb950" stroke-width="1.2" marker-end="url(#c)"/>
+  <line x1="336" y1="104" x2="278" y2="104" stroke="#d29922" stroke-width="1.2" marker-end="url(#c)"/>
+
+  <rect x="344" y="60" width="86" height="60" rx="4" fill="none" stroke="#8b949e" stroke-width="1.2"/>
+  <text x="387" y="95" fill="#8b949e" text-anchor="middle">scene</text>
+
+  <!-- stack -->
+  <text x="158" y="24" fill="#8b949e" font-size="11">command stack</text>
+  <g fill="none" stroke="#8b949e" stroke-width="1.1">
+    <rect x="158" y="30" width="38" height="16" rx="2"/>
+    <rect x="200" y="30" width="38" height="16" rx="2"/>
+    <rect x="242" y="30" width="38" height="16" rx="2"/>
+  </g>
+  <line x1="288" y1="38" x2="336" y2="38" stroke="#8b949e" stroke-width="1" marker-end="url(#c)"/>
+  <text x="344" y="42" fill="#8b949e" font-size="11">undo history</text>
+</svg>

@@ -18,6 +18,7 @@ target_link_libraries(kinetiqra_tests
         kinetiqra::scene
         kinetiqra::anim
         kinetiqra::io
+        kinetiqra::app
         doctest::doctest
 )
 

@@ -1,25 +1,17 @@
-# app — the editor executable.
+# app — the editor.
 #
-# Sole owner of mutable state: Editor holds the Scene, the CommandStack and the
-# Selection. Panels and tools receive references and issue commands; they never
-# mutate the scene directly. That rule is what keeps undo airtight as the UI
-# grows, so it is worth defending even when a direct mutation looks harmless.
+# Sole owner of mutable state: the editor holds the Scene, the CommandStack and
+# the Selection. Panels and tools receive references and issue commands; they
+# never mutate the scene directly. That rule is what keeps undo airtight as the
+# UI grows, so it is worth defending even when a direct mutation looks harmless.
+#
+# The editor is built as a module like any other, so that its panels and tools
+# can be tested. `main.cpp` sits outside `src/` on purpose: the module helper
+# globs `src/*.cpp`, which leaves the entry point out of the library and keeps
+# the executable a shell around it.
 
-file(GLOB_RECURSE APP_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
-file(GLOB_RECURSE APP_HEADERS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.hpp")
-
-add_executable(kinetiqra ${APP_SOURCES} ${APP_HEADERS})
-
-target_include_directories(kinetiqra PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-
-target_compile_definitions(kinetiqra
-    PRIVATE
-        KINETIQRA_VERSION="${PROJECT_VERSION}"
-        KINETIQRA_ASSET_DIR="${KINETIQRA_ASSET_DIR}"
-)
-
-target_link_libraries(kinetiqra
-    PRIVATE
+kinetiqra_add_module(app
+    DEPENDS
         kinetiqra::core
         kinetiqra::math
         kinetiqra::geom
@@ -31,6 +23,16 @@ target_link_libraries(kinetiqra
         imgui::imgui
         imguizmo::imguizmo
 )
+
+target_compile_definitions(kinetiqra_app
+    PRIVATE
+        KINETIQRA_VERSION="${PROJECT_VERSION}"
+        KINETIQRA_ASSET_DIR="${KINETIQRA_ASSET_DIR}"
+)
+
+add_executable(kinetiqra main.cpp)
+
+target_link_libraries(kinetiqra PRIVATE kinetiqra::app)
 
 kinetiqra_set_warnings(kinetiqra)
 set_target_properties(kinetiqra PROPERTIES FOLDER "app")
