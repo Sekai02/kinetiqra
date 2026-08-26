@@ -1,4 +1,4 @@
-#include "Application.hpp"
+#include <kinetiqra/app/Application.hpp>
 
 #include <cstdio>
 #include <string>

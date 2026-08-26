@@ -1,4 +1,4 @@
-#include "Application.hpp"
+#include <kinetiqra/app/Application.hpp>
 
 #include <GLFW/glfw3.h>
 #include <imgui.h>
@@ -92,7 +92,9 @@ void Application::draw_frame() {
 
     ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(),
                                  ImGuiDockNodeFlags_PassthruCentralNode);
-    draw_viewport_panel();
+
+    update_camera();
+    draw_camera_panel();
 
     ImGui::Render();
 
@@ -111,17 +113,32 @@ void Application::draw_frame() {
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 }
 
-void Application::draw_viewport_panel() {
+void Application::update_camera() {
+    const ImGuiIO& io = ImGui::GetIO();
+
+    CameraInput input;
+    input.delta = math::Vec2{io.MouseDelta.x, io.MouseDelta.y};
+    input.wheel = io.MouseWheel;
+    input.left = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+    input.middle = ImGui::IsMouseDown(ImGuiMouseButton_Middle);
+    input.shift = io.KeyShift;
+
+    // The world fills the window behind the dockspace, so it owns the pointer
+    // wherever no panel has claimed it.
+    input.over_world = !io.WantCaptureMouse;
+
+    // Sized in ImGui units rather than framebuffer pixels, to match MouseDelta.
+    // Mixing the two would halve the pan speed on a high density display.
+    viewport_.update(input, math::Vec2{io.DisplaySize.x, io.DisplaySize.y});
+}
+
+void Application::draw_camera_panel() {
     // The world is drawn behind the dockspace rather than into a texture, so
-    // this window is the region that owns camera input and reports what the
-    // camera is doing. Rendering into an offscreen target comes with the first
+    // this panel only reports what the camera is doing; the whole background is
+    // what responds to the pointer. Rendering into an offscreen target, which
+    // would make a panel the viewport in its own right, comes with the first
     // pass that needs more than one view.
-    if (ImGui::Begin("Viewport")) {
-        const ImVec2 size = ImGui::GetContentRegionAvail();
-        const bool hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows);
-
-        viewport_.update(hovered, math::Vec2{size.x, size.y});
-
+    if (ImGui::Begin("Camera")) {
         const auto& camera = viewport_.camera();
         ImGui::TextUnformatted("Drag to orbit, shift or middle drag to pan, scroll to zoom.");
         ImGui::Separator();

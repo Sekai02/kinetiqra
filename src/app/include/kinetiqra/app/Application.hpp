@@ -1,7 +1,6 @@
 #pragma once
 
-#include "Viewport.hpp"
-
+#include <kinetiqra/app/Viewport.hpp>
 #include <kinetiqra/render/Renderer.hpp>
 
 #include <string>
@@ -35,7 +34,8 @@ public:
 
 private:
     void draw_frame();
-    void draw_viewport_panel();
+    void update_camera();
+    void draw_camera_panel();
     void shutdown();
 
     GLFWwindow* window_{nullptr};
