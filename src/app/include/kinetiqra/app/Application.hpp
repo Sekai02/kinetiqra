@@ -9,6 +9,7 @@
 #include <kinetiqra/scene/Pose.hpp>
 #include <kinetiqra/scene/Scene.hpp>
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -62,6 +63,10 @@ private:
     void load_default_scene();
     void load_scene(const std::filesystem::path& path);
 
+    // Names the file the Export button writes to, after whatever was loaded, so
+    // that exporting never silently overwrites the model that was opened.
+    void suggest_export_path(const std::string& stem);
+
     // Bakes every mesh in the scene and uploads it. Called when the scene is
     // replaced, which is the only thing that can change it so far.
     void rebuild_render_meshes();
@@ -93,6 +98,12 @@ private:
     scene::NodeId selected_;
     std::string source_;
     std::string load_error_;
+
+    // Where the Export button writes, and what happened the last time it was
+    // pressed. A plain text field rather than a file dialog, which is a
+    // window system's job and not one ImGui does for us.
+    std::array<char, 256> export_path_{};
+    std::string export_status_;
 
     // The rotation being dragged, in degrees, and what it was before the drag
     // started. A command is pushed when the control is released, not on every

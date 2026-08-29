@@ -2,6 +2,7 @@
 #include <kinetiqra/app/PoseCommand.hpp>
 #include <kinetiqra/geom/Bake.hpp>
 #include <kinetiqra/geom/Primitives.hpp>
+#include <kinetiqra/io/gltf/GltfExport.hpp>
 #include <kinetiqra/io/gltf/GltfImport.hpp>
 
 #include <GLFW/glfw3.h>
@@ -118,7 +119,14 @@ void Application::load_default_scene() {
     source_ = "built-in box";
     load_error_.clear();
     selected_ = node;
+    suggest_export_path("box");
     rebuild_render_meshes();
+}
+
+void Application::suggest_export_path(const std::string& stem) {
+    const std::string suggestion = stem + "-export.glb";
+    std::snprintf(export_path_.data(), export_path_.size(), "%s", suggestion.c_str());
+    export_status_.clear();
 }
 
 void Application::load_scene(const std::filesystem::path& path) {
@@ -135,6 +143,7 @@ void Application::load_scene(const std::filesystem::path& path) {
     commands_.clear();
     source_ = path.filename().string();
     load_error_.clear();
+    suggest_export_path(path.stem().string());
     selected_ = scene_.roots().empty() ? scene::NodeId{} : scene_.roots().front();
     rebuild_render_meshes();
 
@@ -290,6 +299,25 @@ void Application::draw_scene_panel() {
 
         if (!load_error_.empty()) {
             ImGui::TextColored(ImVec4{0.9F, 0.4F, 0.4F, 1.0F}, "%s", load_error_.c_str());
+        }
+
+        ImGui::Separator();
+
+        // What leaves is the scene as authored. A clip being played is a view
+        // of the document, so the playhead has no say in what gets written.
+        ImGui::SetNextItemWidth(-70.0F);
+        ImGui::InputText("##export", export_path_.data(), export_path_.size());
+        ImGui::SameLine();
+
+        if (ImGui::Button("Export")) {
+            const std::filesystem::path target{export_path_.data()};
+            std::string error;
+            export_status_ =
+                io::export_gltf(target, scene_, clips_, error) ? "wrote " + target.string() : error;
+        }
+
+        if (!export_status_.empty()) {
+            ImGui::TextWrapped("%s", export_status_.c_str());
         }
 
         ImGui::Separator();
@@ -544,6 +572,12 @@ void Application::shutdown() {
         ImGui::DestroyContext();
         imgui_ready_ = false;
     }
+
+    // Before the window goes, because these hold GPU objects and deleting one
+    // needs a current context. They are members, so without this they would be
+    // destroyed after this function returns, with nothing left to delete them
+    // against.
+    render_meshes_.clear();
 
     renderer_.shutdown();
 
