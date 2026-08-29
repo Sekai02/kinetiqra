@@ -1,6 +1,7 @@
 #include <kinetiqra/app/Application.hpp>
 #include <kinetiqra/geom/Bake.hpp>
 #include <kinetiqra/geom/Primitives.hpp>
+#include <kinetiqra/io/gltf/GltfImport.hpp>
 
 #include <GLFW/glfw3.h>
 #include <glm/gtc/matrix_transform.hpp>
@@ -27,7 +28,7 @@ Application::~Application() {
     shutdown();
 }
 
-bool Application::initialise(std::string& error) {
+bool Application::initialise(const std::filesystem::path& model, std::string& error) {
     glfwSetErrorCallback(report_glfw_error);
 
     if (glfwInit() == GLFW_FALSE) {
@@ -74,15 +75,84 @@ bool Application::initialise(std::string& error) {
 
     imgui_ready_ = true;
 
-    // A box, built in code rather than loaded, so that the mesh representation
-    // is exercised without a file format in the way.
-    mesh_ = geom::make_box();
-    render_mesh_.upload(geom::bake(mesh_));
+    // Files can also arrive by being dropped on the window, which GLFW reports
+    // through this callback. The user pointer is how it finds its way back here.
+    glfwSetWindowUserPointer(window_, this);
+    glfwSetDropCallback(window_, on_files_dropped);
+
+    if (model.empty()) {
+        load_default_scene();
+    } else {
+        load_scene(model);
+    }
 
     std::printf("kinetiqra %s\n", KINETIQRA_VERSION);
     std::printf("  renderer: %s\n", renderer_.driver_description().c_str());
+    if (!load_error_.empty()) {
+        std::fprintf(stderr, "  %s\n", load_error_.c_str());
+    }
 
     return true;
+}
+
+void Application::load_default_scene() {
+    scene_.clear();
+
+    // A box built in code, so the editor opens on something rather than on an
+    // empty grid.
+    const scene::MeshId mesh = scene_.add_mesh(geom::make_box());
+    const scene::NodeId node = scene_.add_node("box");
+    scene_.set_mesh(node, mesh);
+    scene_.node(node)->transform.translation = math::Vec3{0.0F, 0.5F, 0.0F};
+
+    source_ = "built-in box";
+    load_error_.clear();
+    selected_ = node;
+    rebuild_render_meshes();
+}
+
+void Application::load_scene(const std::filesystem::path& path) {
+    std::string error;
+    if (!io::import_gltf(path, scene_, error)) {
+        // The scene was left empty by the importer, so fall back rather than
+        // leaving the editor showing nothing with no explanation.
+        load_default_scene();
+        load_error_ = error;
+        std::fprintf(stderr, "kinetiqra: %s\n", error.c_str());
+        return;
+    }
+
+    source_ = path.filename().string();
+    load_error_.clear();
+    selected_ = scene_.roots().empty() ? scene::NodeId{} : scene_.roots().front();
+    rebuild_render_meshes();
+
+    std::printf("loaded %s: %zu nodes, %zu meshes\n", source_.c_str(), scene_.node_count(),
+                scene_.mesh_count());
+    std::fflush(stdout);
+}
+
+void Application::rebuild_render_meshes() {
+    render_meshes_.clear();
+
+    for (const scene::MeshId id : scene_.meshes()) {
+        const geom::EditMesh* mesh = scene_.mesh(id);
+        if (mesh == nullptr) {
+            continue;
+        }
+        render_meshes_[id.index].upload(geom::bake(*mesh));
+    }
+}
+
+void Application::on_files_dropped(GLFWwindow* window, int count, const char** paths) {
+    auto* application = static_cast<Application*>(glfwGetWindowUserPointer(window));
+    if (application == nullptr || count < 1) {
+        return;
+    }
+
+    // Only the first file: the editor holds one scene, and loading several in
+    // sequence would just leave the last one anyway.
+    application->load_scene(std::filesystem::path(paths[0]));
 }
 
 void Application::run() {
@@ -103,6 +173,7 @@ void Application::draw_frame() {
 
     update_camera();
     draw_camera_panel();
+    draw_scene_panel();
 
     ImGui::Render();
 
@@ -119,10 +190,20 @@ void Application::draw_frame() {
 
         renderer_.draw_grid(view_projection, camera.position(), camera.far_plane());
 
-        // Lifted by half its height so it rests on the grid rather than being
-        // cut in half by it.
-        const math::Mat4 model = glm::translate(math::Mat4{1.0F}, math::Vec3{0.0F, 0.5F, 0.0F});
-        renderer_.draw_mesh(render_mesh_, model, view_projection, camera.position());
+        for (const scene::NodeId id : scene_.nodes_in_order()) {
+            const scene::Node* node = scene_.node(id);
+            if (node == nullptr || !node->mesh.valid()) {
+                continue;
+            }
+
+            const auto found = render_meshes_.find(node->mesh.index);
+            if (found == render_meshes_.end()) {
+                continue;
+            }
+
+            renderer_.draw_mesh(found->second, scene_.world_transform(id), view_projection,
+                                camera.position());
+        }
     }
 
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -161,19 +242,80 @@ void Application::draw_camera_panel() {
                     static_cast<double>(camera.target().y), static_cast<double>(camera.target().z));
         ImGui::Text("distance  %.2f m", static_cast<double>(camera.distance()));
         ImGui::Text("%.1f fps", static_cast<double>(ImGui::GetIO().Framerate));
+    }
+    ImGui::End();
+}
+
+void Application::draw_scene_panel() {
+    if (ImGui::Begin("Scene")) {
+        ImGui::Text("source  %s", source_.c_str());
+        ImGui::TextUnformatted("Pass a .gltf or .glb on the command line to open it.");
+
+        // Dropping a file works where the window system delivers the event,
+        // which rules out a Wayland session running this through XWayland.
+        ImGui::TextUnformatted("Dropping one on the window also works on X11.");
+
+        if (!load_error_.empty()) {
+            ImGui::TextColored(ImVec4{0.9F, 0.4F, 0.4F, 1.0F}, "%s", load_error_.c_str());
+        }
 
         ImGui::Separator();
 
-        // The ratio between these is the point. Attributes live on corners, so
-        // the box has eight vertices and twenty-four corners, and the bake
-        // splits every corner the GPU cannot share.
-        ImGui::TextUnformatted("mesh");
-        ImGui::Text("editable  %zu vertices, %zu corners, %zu faces", mesh_.vertex_count(),
-                    mesh_.corner_count(), mesh_.face_count());
-        ImGui::Text("baked     %zu vertices, %zu indices", render_mesh_.vertex_count(),
-                    render_mesh_.index_count());
+        for (const scene::NodeId root : scene_.roots()) {
+            draw_node(root);
+        }
+
+        ImGui::Separator();
+
+        const scene::Node* node = scene_.node(selected_);
+        const geom::EditMesh* mesh = node != nullptr ? scene_.mesh(node->mesh) : nullptr;
+
+        if (mesh == nullptr) {
+            ImGui::TextUnformatted("no mesh selected");
+        } else {
+            // The ratio between these is the point. Attributes live on corners,
+            // so a vertex is shared while its normals and UVs are not, and the
+            // bake splits again only what the GPU cannot share.
+            ImGui::Text("editable  %zu vertices, %zu corners, %zu faces", mesh->vertex_count(),
+                        mesh->corner_count(), mesh->face_count());
+
+            const auto found = render_meshes_.find(node->mesh.index);
+            if (found != render_meshes_.end()) {
+                ImGui::Text("baked     %zu vertices, %zu indices", found->second.vertex_count(),
+                            found->second.index_count());
+            }
+        }
     }
     ImGui::End();
+}
+
+void Application::draw_node(scene::NodeId id) {
+    const scene::Node* node = scene_.node(id);
+    if (node == nullptr) {
+        return;
+    }
+
+    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
+    if (node->children.empty()) {
+        flags |= ImGuiTreeNodeFlags_Leaf;
+    }
+    if (id == selected_) {
+        flags |= ImGuiTreeNodeFlags_Selected;
+    }
+
+    const char* label = node->name.empty() ? "(unnamed)" : node->name.c_str();
+    const bool open = ImGui::TreeNodeEx(static_cast<const void*>(&node->name), flags, "%s", label);
+
+    if (ImGui::IsItemClicked()) {
+        selected_ = id;
+    }
+
+    if (open) {
+        for (const scene::NodeId child : node->children) {
+            draw_node(child);
+        }
+        ImGui::TreePop();
+    }
 }
 
 void Application::shutdown() {
