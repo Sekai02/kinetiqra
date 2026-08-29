@@ -115,6 +115,40 @@ TEST_CASE("live slots can be walked by index") {
     CHECK(arena.id_at(c.index) == c);
 }
 
+TEST_CASE("clearing does not reissue the identities it handed out") {
+    Arena<int, ThingTag> arena;
+
+    const ThingId before = arena.insert(1);
+    arena.clear();
+    const ThingId after = arena.insert(2);
+
+    // The slot is the same, so without a rising generation floor these two
+    // would be the same handle and a reference kept across a scene being
+    // replaced would silently point at whatever took its place.
+    CHECK(before.index == after.index);
+    CHECK(before != after);
+    CHECK_FALSE(arena.contains(before));
+    REQUIRE(arena.contains(after));
+    CHECK(*arena.get(after) == 2);
+}
+
+TEST_CASE("the floor survives repeated clears") {
+    Arena<int, ThingTag> arena;
+
+    const ThingId first = arena.insert(1);
+    arena.clear();
+    const ThingId second = arena.insert(2);
+    arena.clear();
+    const ThingId third = arena.insert(3);
+
+    CHECK(first != second);
+    CHECK(second != third);
+    CHECK(first != third);
+    CHECK_FALSE(arena.contains(first));
+    CHECK_FALSE(arena.contains(second));
+    CHECK(arena.contains(third));
+}
+
 TEST_CASE("handles of different kinds are different types") {
     // The guarantee is a compile-time one, so what is asserted here is that the
     // types are distinct rather than aliases of each other. Passing an OtherId

@@ -6,6 +6,7 @@
 #include <fastgltf/types.hpp>
 #include <glm/geometric.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <unordered_map>
@@ -281,10 +282,122 @@ void add_skins(const fastgltf::Asset& asset, scene::Scene& target,
     }
 }
 
+anim::Interpolation as_interpolation(fastgltf::AnimationInterpolation source) {
+    switch (source) {
+        case fastgltf::AnimationInterpolation::Step:
+            return anim::Interpolation::Step;
+        case fastgltf::AnimationInterpolation::CubicSpline:
+            return anim::Interpolation::CubicSpline;
+        case fastgltf::AnimationInterpolation::Linear:
+            break;
+    }
+    return anim::Interpolation::Linear;
+}
+
+// Reads the clips once the nodes exist, since a channel names its target by
+// node index just as a skin names its joints.
+void add_clips(const fastgltf::Asset& asset, const std::vector<scene::NodeId>& by_index,
+               std::vector<anim::Clip>& clips) {
+    clips.reserve(asset.animations.size());
+
+    for (const fastgltf::Animation& source : asset.animations) {
+        anim::Clip clip;
+        clip.name = std::string(source.name);
+        clip.samplers.reserve(source.samplers.size());
+
+        for (const fastgltf::AnimationSampler& sampler : source.samplers) {
+            anim::Sampler out;
+            out.interpolation = as_interpolation(sampler.interpolation);
+
+            const auto& times = asset.accessors[sampler.inputAccessor];
+            out.times.resize(times.count);
+            fastgltf::iterateAccessorWithIndex<float>(
+                asset, times, [&](float value, std::size_t index) { out.times[index] = value; });
+
+            // Translations and scales are three components and rotations four,
+            // and both are kept as Vec4 so one sampler serves either.
+            //
+            // Morph target weights are scalars. Their channels are dropped
+            // below, but the sampler is still read so that the sampler indices
+            // the channels refer to keep lining up with the file. Reading a
+            // scalar accessor as a vector trips an assertion inside fastgltf
+            // rather than returning something wrong, so the type is checked
+            // here instead.
+            const auto& values = asset.accessors[sampler.outputAccessor];
+            out.values.assign(values.count, math::Vec4{0.0F, 0.0F, 0.0F, 0.0F});
+
+            switch (values.type) {
+                case fastgltf::AccessorType::Vec4:
+                    fastgltf::iterateAccessorWithIndex<math::Vec4>(
+                        asset, values,
+                        [&](math::Vec4 value, std::size_t index) { out.values[index] = value; });
+                    break;
+                case fastgltf::AccessorType::Vec3:
+                    fastgltf::iterateAccessorWithIndex<math::Vec3>(
+                        asset, values, [&](math::Vec3 value, std::size_t index) {
+                            out.values[index] = math::Vec4{value, 0.0F};
+                        });
+                    break;
+                case fastgltf::AccessorType::Scalar:
+                    fastgltf::iterateAccessorWithIndex<float>(
+                        asset, values, [&](float value, std::size_t index) {
+                            out.values[index] = math::Vec4{value, 0.0F, 0.0F, 0.0F};
+                        });
+                    break;
+                default:
+                    // Left at zero rather than guessed at. No channel the
+                    // importer keeps uses any other shape.
+                    break;
+            }
+
+            if (!out.times.empty()) {
+                clip.duration = std::max(clip.duration, out.times.back());
+            }
+
+            clip.samplers.push_back(std::move(out));
+        }
+
+        for (const fastgltf::AnimationChannel& channel : source.channels) {
+            if (!channel.nodeIndex.has_value()) {
+                continue;
+            }
+
+            anim::Channel out;
+            out.sampler = channel.samplerIndex;
+
+            const std::size_t node = channel.nodeIndex.value();
+            out.target = node < by_index.size() ? by_index[node] : scene::NodeId{};
+
+            switch (channel.path) {
+                case fastgltf::AnimationPath::Translation:
+                    out.path = anim::Path::Translation;
+                    break;
+                case fastgltf::AnimationPath::Rotation:
+                    out.path = anim::Path::Rotation;
+                    break;
+                case fastgltf::AnimationPath::Scale:
+                    out.path = anim::Path::Scale;
+                    break;
+                default:
+                    // Morph target weights, which there is nothing to drive yet.
+                    continue;
+            }
+
+            clip.channels.push_back(out);
+        }
+
+        clips.push_back(std::move(clip));
+    }
+}
+
 }  // namespace
 
-bool import_gltf(const std::filesystem::path& path, scene::Scene& target, std::string& error) {
+bool import_gltf(const std::filesystem::path& path, scene::Scene& target, std::string& error,
+                 std::vector<anim::Clip>* clips) {
     target.clear();
+    if (clips != nullptr) {
+        clips->clear();
+    }
 
     auto data = fastgltf::GltfDataBuffer::FromPath(path);
     if (data.error() != fastgltf::Error::None) {
@@ -364,6 +477,10 @@ bool import_gltf(const std::filesystem::path& path, scene::Scene& target, std::s
     // After the nodes, because a skin names its joints by node index and those
     // handles do not exist until the tree has been walked.
     add_skins(asset, target, by_index);
+
+    if (clips != nullptr) {
+        add_clips(asset, by_index, *clips);
+    }
 
     return true;
 }

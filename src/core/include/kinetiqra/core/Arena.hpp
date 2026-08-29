@@ -2,6 +2,7 @@
 
 #include <kinetiqra/core/Handle.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <utility>
 #include <vector>
@@ -33,9 +34,9 @@ public:
             return Id{index, slots_[index].generation};
         }
 
-        slots_.push_back(Slot{std::move(value), 0, true});
+        slots_.push_back(Slot{std::move(value), generation_floor_, true});
         ++alive_count_;
-        return Id{static_cast<std::uint32_t>(slots_.size() - 1), 0};
+        return Id{static_cast<std::uint32_t>(slots_.size() - 1), generation_floor_};
     }
 
     // Returns false if the handle was already stale, which callers can treat as
@@ -84,6 +85,14 @@ public:
     }
 
     void clear() {
+        // Handles taken before the clear must not resolve against whatever is
+        // inserted after it. Resetting the counters would hand the first new
+        // element the identity of the first old one, so the floor rises past
+        // every generation ever issued instead.
+        for (const Slot& slot : slots_) {
+            generation_floor_ = std::max(generation_floor_, slot.generation + 1);
+        }
+
         slots_.clear();
         free_.clear();
         alive_count_ = 0;
@@ -99,6 +108,10 @@ private:
     std::vector<Slot> slots_;
     std::vector<std::uint32_t> free_;
     std::size_t alive_count_{0};
+
+    // The generation a freshly created slot starts at, raised by clear so that
+    // identities are never reissued.
+    std::uint32_t generation_floor_{0};
 };
 
 }  // namespace kinetiqra::core
