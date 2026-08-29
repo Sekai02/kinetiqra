@@ -311,6 +311,123 @@ std::string skinned_gltf() {
 })";
 }
 
+// A triangle whose node slides along x, with three keyframes over two seconds.
+std::string animated_gltf() {
+    std::vector<std::uint8_t> buffer;
+
+    for (const float position : {0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F}) {
+        append(buffer, position);
+    }
+
+    const std::size_t indices_offset = buffer.size();
+    append(buffer, static_cast<std::uint16_t>(0));
+    append(buffer, static_cast<std::uint16_t>(1));
+    append(buffer, static_cast<std::uint16_t>(2));
+
+    const std::size_t times_offset = buffer.size();
+    for (const float time : {0.0F, 1.0F, 2.0F}) {
+        append(buffer, time);
+    }
+
+    const std::size_t values_offset = buffer.size();
+    for (const float value : {0.0F, 0.0F, 0.0F, 5.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F}) {
+        append(buffer, value);
+    }
+
+    return R"({
+  "asset": { "version": "2.0" },
+  "scene": 0,
+  "scenes": [ { "nodes": [0] } ],
+  "nodes": [ { "name": "mover", "mesh": 0 } ],
+  "meshes": [ { "primitives": [
+    { "attributes": { "POSITION": 0 }, "indices": 1 } ] } ],
+  "animations": [ {
+    "name": "wobble",
+    "samplers": [ { "input": 2, "output": 3, "interpolation": "LINEAR" } ],
+    "channels": [ { "sampler": 0, "target": { "node": 0, "path": "translation" } } ]
+  } ],
+  "accessors": [
+    { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
+      "min": [0,0,0], "max": [1,1,0] },
+    { "bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR" },
+    { "bufferView": 2, "componentType": 5126, "count": 3, "type": "SCALAR",
+      "min": [0], "max": [2] },
+    { "bufferView": 3, "componentType": 5126, "count": 3, "type": "VEC3" }
+  ],
+  "bufferViews": [
+    { "buffer": 0, "byteOffset": 0, "byteLength": 36 },
+    { "buffer": 0, "byteOffset": )" +
+           std::to_string(indices_offset) + R"(, "byteLength": 6 },
+    { "buffer": 0, "byteOffset": )" +
+           std::to_string(times_offset) + R"(, "byteLength": 12 },
+    { "buffer": 0, "byteOffset": )" +
+           std::to_string(values_offset) + R"(, "byteLength": 36 }
+  ],
+  "buffers": [ { "byteLength": )" +
+           std::to_string(buffer.size()) + R"(, "uri": "data:application/octet-stream;base64,)" +
+           base64(buffer) + R"(" } ]
+})";
+}
+
+// A clip whose only channel drives morph target weights, which are scalars
+// rather than vectors.
+std::string morph_weights_gltf() {
+    std::vector<std::uint8_t> buffer;
+
+    for (const float position : {0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F}) {
+        append(buffer, position);
+    }
+
+    const std::size_t indices_offset = buffer.size();
+    append(buffer, static_cast<std::uint16_t>(0));
+    append(buffer, static_cast<std::uint16_t>(1));
+    append(buffer, static_cast<std::uint16_t>(2));
+
+    const std::size_t times_offset = buffer.size();
+    for (const float time : {0.0F, 1.0F}) {
+        append(buffer, time);
+    }
+
+    const std::size_t weights_offset = buffer.size();
+    for (const float weight : {0.0F, 1.0F}) {
+        append(buffer, weight);
+    }
+
+    return R"({
+  "asset": { "version": "2.0" },
+  "scene": 0,
+  "scenes": [ { "nodes": [0] } ],
+  "nodes": [ { "name": "morphing", "mesh": 0 } ],
+  "meshes": [ { "primitives": [
+    { "attributes": { "POSITION": 0 }, "indices": 1 } ] } ],
+  "animations": [ {
+    "name": "morph",
+    "samplers": [ { "input": 2, "output": 3, "interpolation": "LINEAR" } ],
+    "channels": [ { "sampler": 0, "target": { "node": 0, "path": "weights" } } ]
+  } ],
+  "accessors": [
+    { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
+      "min": [0,0,0], "max": [1,1,0] },
+    { "bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR" },
+    { "bufferView": 2, "componentType": 5126, "count": 2, "type": "SCALAR",
+      "min": [0], "max": [1] },
+    { "bufferView": 3, "componentType": 5126, "count": 2, "type": "SCALAR" }
+  ],
+  "bufferViews": [
+    { "buffer": 0, "byteOffset": 0, "byteLength": 36 },
+    { "buffer": 0, "byteOffset": )" +
+           std::to_string(indices_offset) + R"(, "byteLength": 6 },
+    { "buffer": 0, "byteOffset": )" +
+           std::to_string(times_offset) + R"(, "byteLength": 8 },
+    { "buffer": 0, "byteOffset": )" +
+           std::to_string(weights_offset) + R"(, "byteLength": 8 }
+  ],
+  "buffers": [ { "byteLength": )" +
+           std::to_string(buffer.size()) + R"(, "uri": "data:application/octet-stream;base64,)" +
+           base64(buffer) + R"(" } ]
+})";
+}
+
 }  // namespace
 
 TEST_CASE("a skinned mesh imports with its skin and its joints") {
@@ -378,6 +495,87 @@ TEST_CASE("an unskinned file produces no skin") {
 
     CHECK_FALSE(scene.mesh(scene.meshes()[0])->skinned());
     CHECK_FALSE(scene.node(scene.roots()[0])->skin.valid());
+}
+
+TEST_CASE("a clip imports with its channels pointing at the right nodes") {
+    const TemporaryFile file(animated_gltf());
+
+    Scene scene;
+    std::vector<kinetiqra::anim::Clip> clips;
+    std::string error;
+    REQUIRE_MESSAGE(import_gltf(file.path(), scene, error, &clips), error);
+
+    REQUIRE(clips.size() == 1);
+    const auto& clip = clips[0];
+
+    CHECK(clip.name == "wobble");
+    REQUIRE(clip.samplers.size() == 1);
+    REQUIRE(clip.channels.size() == 1);
+    CHECK(clip.channels[0].path == kinetiqra::anim::Path::Translation);
+    CHECK(clip.channels[0].target == scene.roots()[0]);
+    CHECK(clip.duration == doctest::Approx(2.0F));
+    CHECK(clip.samplers[0].valid());
+}
+
+TEST_CASE("a clip's keyframes survive the trip") {
+    const TemporaryFile file(animated_gltf());
+
+    Scene scene;
+    std::vector<kinetiqra::anim::Clip> clips;
+    std::string error;
+    REQUIRE(import_gltf(file.path(), scene, error, &clips));
+
+    const auto& sampler = clips[0].samplers[0];
+    REQUIRE(sampler.times.size() == 3);
+
+    CHECK(sampler.times[0] == doctest::Approx(0.0F));
+    CHECK(sampler.times[2] == doctest::Approx(2.0F));
+
+    // Sampling the imported clip should reproduce the middle keyframe exactly.
+    const auto value = kinetiqra::anim::sample(sampler, kinetiqra::anim::Path::Translation, 1.0F);
+    CHECK(value.x == doctest::Approx(5.0F));
+}
+
+TEST_CASE("a morph weight channel is skipped without reading it as a vector") {
+    // Morph weights are scalars. Their channels are dropped, but the sampler is
+    // still read so that sampler indices keep lining up, and reading a scalar
+    // accessor as a vector aborts inside fastgltf rather than returning
+    // nonsense. A real file caught this; this keeps it caught.
+    const TemporaryFile file(morph_weights_gltf());
+
+    Scene scene;
+    std::vector<kinetiqra::anim::Clip> clips;
+    std::string error;
+    REQUIRE_MESSAGE(import_gltf(file.path(), scene, error, &clips), error);
+
+    REQUIRE(clips.size() == 1);
+
+    // The sampler survives so the indices still match the file, and the channel
+    // that pointed at it is gone.
+    CHECK(clips[0].samplers.size() == 1);
+    CHECK(clips[0].channels.empty());
+}
+
+TEST_CASE("clips are optional and skipped when not asked for") {
+    const TemporaryFile file(animated_gltf());
+
+    Scene scene;
+    std::string error;
+
+    // The default argument: a caller that only wants geometry.
+    REQUIRE(import_gltf(file.path(), scene, error));
+    CHECK(scene.node_count() == 1);
+}
+
+TEST_CASE("a file with no animation yields no clips") {
+    const TemporaryFile file(triangle_gltf(true));
+
+    Scene scene;
+    std::vector<kinetiqra::anim::Clip> clips;
+    std::string error;
+    REQUIRE(import_gltf(file.path(), scene, error, &clips));
+
+    CHECK(clips.empty());
 }
 
 TEST_CASE("a triangle imports with three vertices and one face") {

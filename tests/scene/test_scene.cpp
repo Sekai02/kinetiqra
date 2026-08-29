@@ -1,3 +1,4 @@
+#include <kinetiqra/scene/Pose.hpp>
 #include <kinetiqra/scene/Scene.hpp>
 
 #include <doctest/doctest.h>
@@ -199,6 +200,76 @@ TEST_CASE("a skin whose counts disagree is refused") {
 
     CHECK_FALSE(scene.add_skin(skin).valid());
     CHECK(scene.joint_matrices(kinetiqra::scene::SkinId{}).empty());
+}
+
+TEST_CASE("a pose stands in for the nodes it mentions") {
+    Scene scene;
+    const NodeId node = scene.add_node("node");
+    scene.node(node)->transform.translation = Vec3{1.0F, 0.0F, 0.0F};
+
+    kinetiqra::scene::Pose pose;
+    kinetiqra::scene::Transform posed;
+    posed.translation = Vec3{9.0F, 0.0F, 0.0F};
+    pose.set(node, posed);
+
+    CHECK(apply(scene.world_transform(node), Vec3{0.0F}).x == doctest::Approx(1.0F));
+    CHECK(apply(scene.world_transform(node, &pose), Vec3{0.0F}).x == doctest::Approx(9.0F));
+
+    // The scene itself was not touched, which is the whole point: playback is a
+    // view, not an edit.
+    CHECK(scene.node(node)->transform.translation.x == doctest::Approx(1.0F));
+}
+
+TEST_CASE("a node the pose says nothing about keeps its own transform") {
+    Scene scene;
+    const NodeId parent = scene.add_node("parent");
+    const NodeId child = scene.add_node("child", parent);
+    scene.node(parent)->transform.translation = Vec3{10.0F, 0.0F, 0.0F};
+    scene.node(child)->transform.translation = Vec3{0.0F, 3.0F, 0.0F};
+
+    kinetiqra::scene::Pose pose;
+    kinetiqra::scene::Transform posed;
+    posed.translation = Vec3{0.0F, 0.0F, 0.0F};
+    pose.set(parent, posed);
+
+    const Vec3 world = apply(scene.world_transform(child, &pose), Vec3{0.0F});
+
+    // The parent moved because the pose said so, and the child kept the offset
+    // it was authored with.
+    CHECK(world.x == doctest::Approx(0.0F));
+    CHECK(world.y == doctest::Approx(3.0F));
+}
+
+TEST_CASE("a pose naming a node that is gone is ignored") {
+    Scene scene;
+    const NodeId node = scene.add_node("node");
+
+    kinetiqra::scene::Pose pose;
+    pose.set(node, kinetiqra::scene::Transform{});
+
+    scene.clear();
+    const NodeId replacement = scene.add_node("another");
+
+    // The new node reuses the slot, and the stale entry must not move it.
+    CHECK(pose.find(replacement) == nullptr);
+}
+
+TEST_CASE("joint matrices follow the pose") {
+    Scene scene;
+    const NodeId joint = scene.add_node("joint");
+
+    kinetiqra::scene::Skin skin;
+    skin.joints = {joint};
+    skin.inverse_bind = {glm::inverse(scene.world_transform(joint))};
+    const auto id = scene.add_skin(skin);
+
+    kinetiqra::scene::Pose pose;
+    kinetiqra::scene::Transform posed;
+    posed.translation = Vec3{0.0F, 4.0F, 0.0F};
+    pose.set(joint, posed);
+
+    CHECK(apply(scene.joint_matrices(id)[0], Vec3{0.0F}).y == doctest::Approx(0.0F));
+    CHECK(apply(scene.joint_matrices(id, &pose)[0], Vec3{0.0F}).y == doctest::Approx(4.0F));
 }
 
 TEST_CASE("clearing empties the scene") {

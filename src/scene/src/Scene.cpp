@@ -1,3 +1,4 @@
+#include <kinetiqra/scene/Pose.hpp>
 #include <kinetiqra/scene/Scene.hpp>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -58,7 +59,7 @@ void Scene::set_skin(NodeId node_id, SkinId skin_id) {
     }
 }
 
-std::vector<math::Mat4> Scene::joint_matrices(SkinId id) const {
+std::vector<math::Mat4> Scene::joint_matrices(SkinId id, const Pose* pose) const {
     const Skin* skin = skins_.get(id);
     if (skin == nullptr) {
         return {};
@@ -71,7 +72,7 @@ std::vector<math::Mat4> Scene::joint_matrices(SkinId id) const {
         // Where the joint is now, undoing where it was when the mesh was bound.
         // In the bind pose these cancel and the vertex is left where it was
         // modelled, which is the property the tests pin down.
-        matrices.push_back(world_transform(skin->joints[joint]) * skin->inverse_bind[joint]);
+        matrices.push_back(world_transform(skin->joints[joint], pose) * skin->inverse_bind[joint]);
     }
 
     return matrices;
@@ -117,12 +118,17 @@ std::vector<MeshId> Scene::meshes() const {
     return result;
 }
 
-math::Mat4 Scene::world_transform(NodeId id) const {
+math::Mat4 Scene::world_transform(NodeId id, const Pose* pose) const {
     math::Mat4 result{1.0F};
 
     for (NodeId current = id; nodes_.contains(current);) {
         const Node* node = nodes_.get(current);
-        result = node->transform.matrix() * result;
+
+        // The pose speaks for the nodes it mentions and stays quiet about the
+        // rest, so a clip driving three joints leaves the others as authored.
+        const Transform* posed = pose != nullptr ? pose->find(current) : nullptr;
+        result = (posed != nullptr ? posed->matrix() : node->transform.matrix()) * result;
+
         current = node->parent;
     }
 

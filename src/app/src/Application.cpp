@@ -102,6 +102,11 @@ bool Application::initialise(const std::filesystem::path& model, std::string& er
 void Application::load_default_scene() {
     scene_.clear();
 
+    clips_.clear();
+    pose_.clear();
+    showing_pose_ = false;
+    player_ = anim::Player{};
+
     // A box built in code, so the editor opens on something rather than on an
     // empty grid.
     const scene::MeshId mesh = scene_.add_mesh(geom::make_box());
@@ -118,7 +123,7 @@ void Application::load_default_scene() {
 
 void Application::load_scene(const std::filesystem::path& path) {
     std::string error;
-    if (!io::import_gltf(path, scene_, error)) {
+    if (!io::import_gltf(path, scene_, error, &clips_)) {
         // The scene was left empty by the importer, so fall back rather than
         // leaving the editor showing nothing with no explanation.
         load_default_scene();
@@ -133,8 +138,16 @@ void Application::load_scene(const std::filesystem::path& path) {
     selected_ = scene_.roots().empty() ? scene::NodeId{} : scene_.roots().front();
     rebuild_render_meshes();
 
-    std::printf("loaded %s: %zu nodes, %zu meshes\n", source_.c_str(), scene_.node_count(),
-                scene_.mesh_count());
+    clip_index_ = 0;
+    pose_.clear();
+    showing_pose_ = false;
+    player_ = anim::Player{};
+    if (!clips_.empty()) {
+        player_.set_duration(clips_.front().duration);
+    }
+
+    std::printf("loaded %s: %zu nodes, %zu meshes, %zu clips\n", source_.c_str(),
+                scene_.node_count(), scene_.mesh_count(), clips_.size());
     std::fflush(stdout);
 }
 
@@ -179,9 +192,11 @@ void Application::draw_frame() {
 
     handle_shortcuts();
     update_camera();
+    update_animation(ImGui::GetIO().DeltaTime);
     draw_camera_panel();
     draw_scene_panel();
     draw_pose_panel();
+    draw_timeline_panel();
 
     ImGui::Render();
 
@@ -209,15 +224,17 @@ void Application::draw_frame() {
                 continue;
             }
 
+            const scene::Pose* pose = active_pose();
+
             if (node->skin.valid() && found->second.skinned()) {
                 // No model matrix: the joints already place the mesh, and glTF
                 // says the transform of the node carrying a skinned mesh is
                 // ignored.
-                renderer_.draw_skinned_mesh(found->second, scene_.joint_matrices(node->skin),
+                renderer_.draw_skinned_mesh(found->second, scene_.joint_matrices(node->skin, pose),
                                             view_projection, camera.position());
             } else {
-                renderer_.draw_mesh(found->second, scene_.world_transform(id), view_projection,
-                                    camera.position());
+                renderer_.draw_mesh(found->second, scene_.world_transform(id, pose),
+                                    view_projection, camera.position());
             }
         }
     }
@@ -316,6 +333,15 @@ void Application::draw_pose_panel() {
         }
 
         ImGui::Text("%s", node->name.empty() ? "(unnamed)" : node->name.c_str());
+
+        if (showing_pose_) {
+            // Editing here still changes the document, but the viewport is
+            // showing the clip, so the change would not be visible and would
+            // look like nothing happened.
+            ImGui::TextColored(ImVec4{0.85F, 0.75F, 0.35F, 1.0F},
+                               "a clip is playing; stop it to see your pose");
+        }
+
         ImGui::Separator();
 
         // Euler angles are a poor way to store a rotation and a good way to
@@ -368,6 +394,99 @@ void Application::draw_pose_panel() {
         ImGui::EndDisabled();
         ImGui::SameLine();
         ImGui::TextUnformatted("Ctrl+Z, Ctrl+Y");
+    }
+    ImGui::End();
+}
+
+const scene::Pose* Application::active_pose() const {
+    return showing_pose_ ? &pose_ : nullptr;
+}
+
+void Application::update_animation(float delta_seconds) {
+    if (clip_index_ >= clips_.size()) {
+        showing_pose_ = false;
+        return;
+    }
+
+    player_.advance(delta_seconds);
+
+    // The pose is rebuilt whenever the playhead is somewhere other than the
+    // start, so scrubbing shows the clip even while paused. Back at zero with
+    // nothing playing, the pose is dropped and the scene speaks for itself,
+    // which is how the user's hand-made pose comes back.
+    const bool showing = player_.playing() || player_.time() > 0.0F;
+
+    if (!showing) {
+        showing_pose_ = false;
+        pose_.clear();
+        return;
+    }
+
+    pose_.clear();
+    anim::evaluate(clips_[clip_index_], player_.time(), scene_, pose_);
+    showing_pose_ = true;
+}
+
+void Application::draw_timeline_panel() {
+    if (ImGui::Begin("Timeline")) {
+        if (clips_.empty()) {
+            ImGui::TextUnformatted("this file carries no animation");
+            ImGui::End();
+            return;
+        }
+
+        const anim::Clip& clip = clips_[clip_index_];
+
+        if (ImGui::BeginCombo("clip", clip.name.empty() ? "(unnamed)" : clip.name.c_str())) {
+            for (std::size_t index = 0; index < clips_.size(); ++index) {
+                const bool selected = index == clip_index_;
+                const char* label =
+                    clips_[index].name.empty() ? "(unnamed)" : clips_[index].name.c_str();
+
+                if (ImGui::Selectable(label, selected)) {
+                    clip_index_ = index;
+                    player_.stop();
+                    player_.set_duration(clips_[index].duration);
+                }
+            }
+            ImGui::EndCombo();
+        }
+
+        if (ImGui::Button(player_.playing() ? "Pause" : "Play")) {
+            if (player_.playing()) {
+                player_.pause();
+            } else {
+                player_.play();
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Stop")) {
+            player_.stop();
+        }
+        ImGui::SameLine();
+        bool looping = player_.looping();
+        if (ImGui::Checkbox("loop", &looping)) {
+            player_.set_looping(looping);
+        }
+
+        float time = player_.time();
+        if (ImGui::SliderFloat("time", &time, 0.0F, player_.duration(), "%.3f s")) {
+            player_.set_time(time);
+        }
+
+        float speed = player_.speed();
+        if (ImGui::DragFloat("speed", &speed, 0.01F, -4.0F, 4.0F, "%.2fx")) {
+            player_.set_speed(speed);
+        }
+
+        ImGui::Separator();
+        ImGui::Text("%zu channels over %.2f s", clip.channels.size(),
+                    static_cast<double>(clip.duration));
+
+        if (showing_pose_) {
+            ImGui::TextColored(ImVec4{0.85F, 0.75F, 0.35F, 1.0F},
+                               "showing the clip, not the authored pose");
+        }
     }
     ImGui::End();
 }

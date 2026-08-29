@@ -63,6 +63,10 @@ struct Node {
     SkinId skin;
 };
 
+// Declared rather than included: Pose is expressed in terms of this file's
+// types, so the include goes the other way.
+class Pose;
+
 // A tree of nodes and the meshes they refer to.
 //
 // Nodes and meshes are addressed by handles for the same reason mesh elements
@@ -93,7 +97,11 @@ public:
 
     // One matrix per joint, ready for the vertex shader: where the joint stands
     // now, composed with where it stood when the mesh was bound.
-    [[nodiscard]] std::vector<math::Mat4> joint_matrices(SkinId id) const;
+    //
+    // With a pose, "now" means what the pose says for the nodes it mentions,
+    // which is how an animation is drawn without being written into the scene.
+    [[nodiscard]] std::vector<math::Mat4> joint_matrices(SkinId id,
+                                                         const Pose* pose = nullptr) const;
 
     [[nodiscard]] const std::vector<NodeId>& roots() const { return roots_; }
 
@@ -105,7 +113,7 @@ public:
 
     // Composed from this node up to its root. Walks the parents on each call,
     // which is fine at this depth and avoids a cache that could go stale.
-    [[nodiscard]] math::Mat4 world_transform(NodeId id) const;
+    [[nodiscard]] math::Mat4 world_transform(NodeId id, const Pose* pose = nullptr) const;
 
     [[nodiscard]] std::size_t node_count() const { return nodes_.size(); }
 
