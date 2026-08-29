@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace kinetiqra::render {
 
@@ -36,6 +37,20 @@ public:
     void draw_mesh(const RenderMesh& mesh, const math::Mat4& model,
                    const math::Mat4& view_projection, const math::Vec3& camera_position) const;
 
+    // Deforms the mesh by its joints on the GPU.
+    //
+    // There is no model matrix: glTF specifies that the transform of the node
+    // carrying a skinned mesh is ignored, because the joints already place it,
+    // and applying both would move it twice.
+    //
+    // A skin with more joints than the shader's block holds is skipped rather
+    // than drawn wrong; `kMaxJoints` says where that limit is.
+    void draw_skinned_mesh(const RenderMesh& mesh, const std::vector<math::Mat4>& joints,
+                           const math::Mat4& view_projection,
+                           const math::Vec3& camera_position) const;
+
+    static constexpr std::size_t kMaxJoints = 256;
+
     void shutdown();
 
     [[nodiscard]] std::string driver_description() const;
@@ -43,6 +58,10 @@ public:
 private:
     Shader grid_shader_;
     Shader mesh_shader_;
+    Shader skinned_shader_;
+
+    // Holds the joint matrices for the draw in flight.
+    std::uint32_t joint_buffer_{0};
 
     // Core profile forbids drawing without a vertex array bound, even when the
     // vertices are generated entirely in the shader.

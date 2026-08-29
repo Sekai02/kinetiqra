@@ -11,12 +11,24 @@ namespace kinetiqra::geom {
 //
 // Vertices are interleaved as position, normal, uv, which is eight floats each.
 struct BakedMesh {
-    static constexpr std::size_t kFloatsPerVertex = 8;
+    // position, normal, uv.
+    static constexpr std::size_t kStaticFloatsPerVertex = 8;
+
+    // The same, plus four joint indices and four weights.
+    static constexpr std::size_t kSkinnedFloatsPerVertex = 16;
 
     std::vector<float> vertices;
     std::vector<std::uint32_t> indices;
 
-    [[nodiscard]] std::size_t vertex_count() const { return vertices.size() / kFloatsPerVertex; }
+    // Which of the two layouts the vertices are in. The renderer needs it to
+    // describe the vertex array and to pick the shader.
+    bool skinned{false};
+
+    [[nodiscard]] std::size_t floats_per_vertex() const {
+        return skinned ? kSkinnedFloatsPerVertex : kStaticFloatsPerVertex;
+    }
+
+    [[nodiscard]] std::size_t vertex_count() const { return vertices.size() / floats_per_vertex(); }
 
     [[nodiscard]] std::size_t triangle_count() const { return indices.size() / 3; }
 };

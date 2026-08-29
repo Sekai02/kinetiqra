@@ -35,6 +35,17 @@ bool Renderer::initialise(GlLoader loader, const std::string& shader_directory,
         return false;
     }
 
+    // The fragment stage is shared: skinning changes where a vertex lands, not
+    // how the surface is lit.
+    if (!skinned_shader_.load(shader_directory + "/skinned.vert", shader_directory + "/mesh.frag",
+                              error)) {
+        return false;
+    }
+
+    glCreateBuffers(1, &joint_buffer_);
+    glNamedBufferData(joint_buffer_, static_cast<GLsizeiptr>(kMaxJoints * sizeof(math::Mat4)),
+                      nullptr, GL_DYNAMIC_DRAW);
+
     glCreateVertexArrays(1, &empty_vertex_array_);
 
     glEnable(GL_DEPTH_TEST);
@@ -89,14 +100,46 @@ void Renderer::draw_mesh(const RenderMesh& mesh, const math::Mat4& model,
     mesh.draw();
 }
 
+void Renderer::draw_skinned_mesh(const RenderMesh& mesh, const std::vector<math::Mat4>& joints,
+                                 const math::Mat4& view_projection,
+                                 const math::Vec3& camera_position) const {
+    if (!initialised_ || !mesh.valid() || joints.empty()) {
+        return;
+    }
+
+    if (joints.size() > kMaxJoints) {
+        // Drawing the first 256 would deform the rest of the model by whatever
+        // happened to be in the buffer, which looks like a bug in the mesh
+        // rather than a limit being hit.
+        return;
+    }
+
+    glNamedBufferSubData(joint_buffer_, 0,
+                         static_cast<GLsizeiptr>(joints.size() * sizeof(math::Mat4)),
+                         joints.data());
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, joint_buffer_);
+
+    skinned_shader_.bind();
+    skinned_shader_.set_uniform("u_view_projection", view_projection);
+    skinned_shader_.set_uniform("u_camera_position", camera_position);
+
+    mesh.draw();
+}
+
 void Renderer::shutdown() {
     if (empty_vertex_array_ != 0) {
         glDeleteVertexArrays(1, &empty_vertex_array_);
         empty_vertex_array_ = 0;
     }
 
+    if (joint_buffer_ != 0) {
+        glDeleteBuffers(1, &joint_buffer_);
+        joint_buffer_ = 0;
+    }
+
     grid_shader_ = Shader{};
     mesh_shader_ = Shader{};
+    skinned_shader_ = Shader{};
     initialised_ = false;
 }
 

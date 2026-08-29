@@ -16,6 +16,7 @@ using kinetiqra::geom::make_box;
 using kinetiqra::geom::VertexId;
 using kinetiqra::math::Vec2;
 using kinetiqra::math::Vec3;
+using kinetiqra::math::Vec4;
 
 TEST_CASE("channels grow with the domain they describe") {
     EditMesh mesh;
@@ -168,6 +169,88 @@ TEST_CASE("a quad is triangulated as a fan") {
     const auto baked = bake(mesh);
 
     CHECK(baked.triangle_count() == 2);
+    CHECK(baked.vertex_count() == 4);
+}
+
+TEST_CASE("an unskinned mesh bakes to eight floats a vertex") {
+    const EditMesh box = make_box();
+    const auto baked = bake(box);
+
+    CHECK_FALSE(box.skinned());
+    CHECK_FALSE(baked.skinned);
+    CHECK(baked.floats_per_vertex() == 8);
+    CHECK(baked.vertices.size() == baked.vertex_count() * 8);
+}
+
+TEST_CASE("skinning a vertex makes the mesh bake to sixteen floats a vertex") {
+    EditMesh mesh;
+    const VertexId a = mesh.add_vertex(Vec3{0.0F, 0.0F, 0.0F});
+    const VertexId b = mesh.add_vertex(Vec3{1.0F, 0.0F, 0.0F});
+    const VertexId c = mesh.add_vertex(Vec3{0.0F, 1.0F, 0.0F});
+    mesh.add_face({a, b, c});
+
+    CHECK_FALSE(mesh.skinned());
+
+    mesh.set_skinning(a, Vec4{0, 1, 0, 0}, Vec4{0.75F, 0.25F, 0.0F, 0.0F});
+    mesh.set_skinning(b, Vec4{1, 0, 0, 0}, Vec4{1.0F, 0.0F, 0.0F, 0.0F});
+    mesh.set_skinning(c, Vec4{0, 0, 0, 0}, Vec4{1.0F, 0.0F, 0.0F, 0.0F});
+
+    CHECK(mesh.skinned());
+
+    const auto baked = bake(mesh);
+    CHECK(baked.skinned);
+    CHECK(baked.floats_per_vertex() == 16);
+    CHECK(baked.vertex_count() == 3);
+    CHECK(baked.vertices.size() == 48);
+}
+
+TEST_CASE("joints and weights land on the vertex they belong to") {
+    EditMesh mesh;
+    const VertexId a = mesh.add_vertex(Vec3{0.0F, 0.0F, 0.0F});
+    const VertexId b = mesh.add_vertex(Vec3{1.0F, 0.0F, 0.0F});
+    const VertexId c = mesh.add_vertex(Vec3{0.0F, 1.0F, 0.0F});
+    mesh.add_face({a, b, c});
+
+    mesh.set_skinning(a, Vec4{3, 0, 0, 0}, Vec4{1.0F, 0.0F, 0.0F, 0.0F});
+    mesh.set_skinning(b, Vec4{0, 0, 0, 0}, Vec4{1.0F, 0.0F, 0.0F, 0.0F});
+    mesh.set_skinning(c, Vec4{0, 0, 0, 0}, Vec4{1.0F, 0.0F, 0.0F, 0.0F});
+
+    const auto baked = bake(mesh);
+
+    // The first emitted vertex is the first corner of the only face, which is
+    // vertex a, and its joint index sits at offset eight in the layout.
+    CHECK(baked.vertices[0] == doctest::Approx(0.0F));
+    CHECK(baked.vertices[8] == doctest::Approx(3.0F));
+    CHECK(baked.vertices[12] == doctest::Approx(1.0F));
+}
+
+TEST_CASE("corners of one skinned vertex still merge when they agree") {
+    // Skinning data is per vertex, so it can never be the reason two corners
+    // fail to merge. This pins that down.
+    EditMesh mesh;
+    const VertexId a = mesh.add_vertex(Vec3{0.0F, 0.0F, 0.0F});
+    const VertexId b = mesh.add_vertex(Vec3{1.0F, 0.0F, 0.0F});
+    const VertexId c = mesh.add_vertex(Vec3{1.0F, 0.0F, 1.0F});
+    const VertexId d = mesh.add_vertex(Vec3{0.0F, 0.0F, 1.0F});
+
+    std::vector<CornerId> first;
+    std::vector<CornerId> second;
+    mesh.add_face({a, b, c}, &first);
+    mesh.add_face({a, c, d}, &second);
+
+    for (const VertexId vertex : {a, b, c, d}) {
+        mesh.set_skinning(vertex, Vec4{0, 0, 0, 0}, Vec4{1.0F, 0.0F, 0.0F, 0.0F});
+    }
+    for (const CornerId corner : first) {
+        mesh.set_normal(corner, Vec3{0.0F, 1.0F, 0.0F});
+    }
+    for (const CornerId corner : second) {
+        mesh.set_normal(corner, Vec3{0.0F, 1.0F, 0.0F});
+    }
+
+    const auto baked = bake(mesh);
+
+    CHECK(mesh.corner_count() == 6);
     CHECK(baked.vertex_count() == 4);
 }
 

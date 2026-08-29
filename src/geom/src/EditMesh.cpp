@@ -98,6 +98,33 @@ void EditMesh::set_uv(CornerId id, math::Vec2 value) {
     }
 }
 
+void EditMesh::set_skinning(VertexId id, math::Vec4 joints, math::Vec4 weights) {
+    if (!contains(id)) {
+        return;
+    }
+
+    // Created on first use rather than in the constructor, so that an unskinned
+    // mesh carries no skinning channels and the bake can tell them apart by
+    // asking whether they exist.
+    auto* joint_channel = attributes_.add<math::Vec4>(kJoints, Domain::Vertex);
+    auto* weight_channel = attributes_.add<math::Vec4>(kWeights, Domain::Vertex);
+    if (joint_channel == nullptr || weight_channel == nullptr) {
+        return;
+    }
+
+    attributes_.resize(Domain::Vertex, vertices_.slot_count());
+
+    if (id.index < joint_channel->size()) {
+        (*joint_channel)[id.index] = joints;
+        (*weight_channel)[id.index] = weights;
+    }
+}
+
+bool EditMesh::skinned() const {
+    return attributes_.find<math::Vec4>(kJoints, Domain::Vertex) != nullptr &&
+           attributes_.find<math::Vec4>(kWeights, Domain::Vertex) != nullptr;
+}
+
 std::string EditMesh::validate() const {
     if (attributes_.find<math::Vec3>(kPosition, Domain::Vertex) == nullptr) {
         return "the position channel is missing or has the wrong type";

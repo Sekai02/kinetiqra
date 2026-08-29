@@ -3,13 +3,13 @@
 #include <glad/glad.h>
 
 #include <utility>
+#include <vector>
 
 namespace kinetiqra::render {
 
 namespace {
 
 constexpr GLuint kBindingIndex = 0;
-constexpr GLsizei kStride = static_cast<GLsizei>(geom::BakedMesh::kFloatsPerVertex * sizeof(float));
 
 }  // namespace
 
@@ -51,6 +51,7 @@ void RenderMesh::destroy() {
     }
     vertex_count_ = 0;
     index_count_ = 0;
+    skinned_ = false;
 }
 
 void RenderMesh::upload(const geom::BakedMesh& baked) {
@@ -62,6 +63,9 @@ void RenderMesh::upload(const geom::BakedMesh& baked) {
 
     vertex_count_ = baked.vertex_count();
     index_count_ = baked.indices.size();
+    skinned_ = baked.skinned;
+
+    const auto stride = static_cast<GLsizei>(baked.floats_per_vertex() * sizeof(float));
 
     glCreateBuffers(1, &vertex_buffer_);
     glNamedBufferStorage(vertex_buffer_,
@@ -74,19 +78,27 @@ void RenderMesh::upload(const geom::BakedMesh& baked) {
                          baked.indices.data(), 0);
 
     glCreateVertexArrays(1, &vertex_array_);
-    glVertexArrayVertexBuffer(vertex_array_, kBindingIndex, vertex_buffer_, 0, kStride);
+    glVertexArrayVertexBuffer(vertex_array_, kBindingIndex, vertex_buffer_, 0, stride);
     glVertexArrayElementBuffer(vertex_array_, index_buffer_);
 
-    // position, normal, uv, in the order geom::bake interleaves them.
-    const struct {
+    // position, normal, uv, and for a skinned mesh the four joint indices and
+    // their weights, in the order geom::bake interleaves them.
+    struct Attribute {
         GLuint location;
         GLint components;
         GLuint offset;
-    } attributes[] = {
+    };
+
+    std::vector<Attribute> attributes{
         {0, 3, 0},
         {1, 3, 3 * sizeof(float)},
         {2, 2, 6 * sizeof(float)},
     };
+
+    if (skinned_) {
+        attributes.push_back({3, 4, 8 * sizeof(float)});
+        attributes.push_back({4, 4, 12 * sizeof(float)});
+    }
 
     for (const auto& attribute : attributes) {
         glEnableVertexArrayAttrib(vertex_array_, attribute.location);

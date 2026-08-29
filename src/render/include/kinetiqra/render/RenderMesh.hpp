@@ -33,6 +33,9 @@ public:
 
     [[nodiscard]] std::size_t index_count() const { return index_count_; }
 
+    // Which vertex layout was uploaded, and therefore which shader can draw it.
+    [[nodiscard]] bool skinned() const { return skinned_; }
+
     [[nodiscard]] bool valid() const { return vertex_array_ != 0 && index_count_ > 0; }
 
 private:
@@ -41,6 +44,7 @@ private:
     std::uint32_t index_buffer_{0};
     std::size_t vertex_count_{0};
     std::size_t index_count_{0};
+    bool skinned_{false};
 };
 
 }  // namespace kinetiqra::render

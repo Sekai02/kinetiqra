@@ -28,6 +28,18 @@ inline constexpr const char* kPosition = "position";  // Vec3, Vertex
 inline constexpr const char* kNormal = "normal";      // Vec3, Corner
 inline constexpr const char* kUv = "uv";              // Vec2, Corner
 
+// Skinning, and note the domain: these are on the vertex, not the corner.
+//
+// A normal belongs to a corner because two faces meeting at a vertex may
+// disagree about which way the surface points. How much a joint owns a vertex
+// is not like that: it is a property of the point in space, and every corner
+// sitting on it has to agree, or the mesh would tear when the joint moves.
+//
+// Four joints per vertex, which is what glTF's JOINTS_0 and WEIGHTS_0 carry and
+// what the vertex shader blends.
+inline constexpr const char* kJoints = "joints";    // Vec4 of indices, Vertex
+inline constexpr const char* kWeights = "weights";  // Vec4, Vertex
+
 // A mesh in the form the editor works on, as opposed to the form the GPU wants.
 //
 // Elements are addressed by generation-checked handles rather than by index or
@@ -79,6 +91,12 @@ public:
     void set_position(VertexId id, math::Vec3 value);
     void set_normal(CornerId id, math::Vec3 value);
     void set_uv(CornerId id, math::Vec2 value);
+
+    // Creates the joints and weights channels if they are not there yet, which
+    // is what makes a mesh skinned as far as the bake is concerned.
+    void set_skinning(VertexId id, math::Vec4 joints, math::Vec4 weights);
+
+    [[nodiscard]] bool skinned() const;
 
     // Reports the first structural problem found, or an empty string. Used by
     // the tests and worth calling after an importer has filled a mesh in.

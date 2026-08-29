@@ -1,15 +1,19 @@
 #include <kinetiqra/app/Application.hpp>
+#include <kinetiqra/app/PoseCommand.hpp>
 #include <kinetiqra/geom/Bake.hpp>
 #include <kinetiqra/geom/Primitives.hpp>
 #include <kinetiqra/io/gltf/GltfImport.hpp>
 
 #include <GLFW/glfw3.h>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
+#include <glm/trigonometric.hpp>
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 
 #include <cstdio>
+#include <memory>
 
 namespace kinetiqra::app {
 
@@ -105,6 +109,7 @@ void Application::load_default_scene() {
     scene_.set_mesh(node, mesh);
     scene_.node(node)->transform.translation = math::Vec3{0.0F, 0.5F, 0.0F};
 
+    commands_.clear();
     source_ = "built-in box";
     load_error_.clear();
     selected_ = node;
@@ -122,6 +127,7 @@ void Application::load_scene(const std::filesystem::path& path) {
         return;
     }
 
+    commands_.clear();
     source_ = path.filename().string();
     load_error_.clear();
     selected_ = scene_.roots().empty() ? scene::NodeId{} : scene_.roots().front();
@@ -171,9 +177,11 @@ void Application::draw_frame() {
     ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(),
                                  ImGuiDockNodeFlags_PassthruCentralNode);
 
+    handle_shortcuts();
     update_camera();
     draw_camera_panel();
     draw_scene_panel();
+    draw_pose_panel();
 
     ImGui::Render();
 
@@ -201,8 +209,16 @@ void Application::draw_frame() {
                 continue;
             }
 
-            renderer_.draw_mesh(found->second, scene_.world_transform(id), view_projection,
-                                camera.position());
+            if (node->skin.valid() && found->second.skinned()) {
+                // No model matrix: the joints already place the mesh, and glTF
+                // says the transform of the node carrying a skinned mesh is
+                // ignored.
+                renderer_.draw_skinned_mesh(found->second, scene_.joint_matrices(node->skin),
+                                            view_projection, camera.position());
+            } else {
+                renderer_.draw_mesh(found->second, scene_.world_transform(id), view_projection,
+                                    camera.position());
+            }
         }
     }
 
@@ -287,6 +303,90 @@ void Application::draw_scene_panel() {
         }
     }
     ImGui::End();
+}
+
+void Application::draw_pose_panel() {
+    if (ImGui::Begin("Pose")) {
+        scene::Node* node = scene_.node(selected_);
+
+        if (node == nullptr) {
+            ImGui::TextUnformatted("select a node in the scene tree");
+            ImGui::End();
+            return;
+        }
+
+        ImGui::Text("%s", node->name.empty() ? "(unnamed)" : node->name.c_str());
+        ImGui::Separator();
+
+        // Euler angles are a poor way to store a rotation and a good way to
+        // offer one: the node keeps a quaternion, and these three numbers exist
+        // only for as long as the control is on screen.
+        if (!pose_dragging_) {
+            pose_euler_ = glm::degrees(glm::eulerAngles(node->transform.rotation));
+        }
+
+        const bool changed = ImGui::DragFloat3("rotation", &pose_euler_.x, 0.5F);
+
+        if (changed) {
+            if (!pose_dragging_) {
+                // Remember where the joint was before the gesture began, so the
+                // command can put it back there in one step.
+                pose_before_ = node->transform.rotation;
+                pose_dragging_ = true;
+            }
+
+            // Written directly for the duration of the drag, so the mesh follows
+            // the pointer; the command is what makes it permanent.
+            node->transform.rotation = math::Quat(glm::radians(pose_euler_));
+        }
+
+        // One command per gesture. Pushing one per frame would make undo
+        // useless, since a single drag would need hundreds of presses to walk
+        // back.
+        if (pose_dragging_ && ImGui::IsItemDeactivatedAfterEdit()) {
+            const math::Quat after = node->transform.rotation;
+            node->transform.rotation = pose_before_;
+            commands_.execute(
+                std::make_unique<RotateJoint>(scene_, selected_, pose_before_, after));
+            pose_dragging_ = false;
+        } else if (pose_dragging_ && !ImGui::IsItemActive()) {
+            pose_dragging_ = false;
+        }
+
+        ImGui::Separator();
+        ImGui::Text("history  %zu", commands_.depth());
+        ImGui::BeginDisabled(!commands_.can_undo());
+        if (ImGui::Button("Undo")) {
+            commands_.undo();
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!commands_.can_redo());
+        if (ImGui::Button("Redo")) {
+            commands_.redo();
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::TextUnformatted("Ctrl+Z, Ctrl+Y");
+    }
+    ImGui::End();
+}
+
+void Application::handle_shortcuts() {
+    const ImGuiIO& io = ImGui::GetIO();
+    if (!io.KeyCtrl || io.WantTextInput) {
+        return;
+    }
+
+    if (ImGui::IsKeyPressed(ImGuiKey_Z, false)) {
+        if (io.KeyShift) {
+            commands_.redo();
+        } else {
+            commands_.undo();
+        }
+    } else if (ImGui::IsKeyPressed(ImGuiKey_Y, false)) {
+        commands_.redo();
+    }
 }
 
 void Application::draw_node(scene::NodeId id) {
