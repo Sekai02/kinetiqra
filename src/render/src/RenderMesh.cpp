@@ -22,7 +22,11 @@ RenderMesh::RenderMesh(RenderMesh&& other) noexcept
       vertex_buffer_(std::exchange(other.vertex_buffer_, 0)),
       index_buffer_(std::exchange(other.index_buffer_, 0)),
       vertex_count_(std::exchange(other.vertex_count_, 0)),
-      index_count_(std::exchange(other.index_count_, 0)) {}
+      index_count_(std::exchange(other.index_count_, 0)),
+      // Part of the layout that was uploaded, so it travels with the buffers.
+      // Leaving it behind would make a moved mesh claim to be static and be
+      // drawn by the shader that cannot skin it.
+      skinned_(std::exchange(other.skinned_, false)) {}
 
 RenderMesh& RenderMesh::operator=(RenderMesh&& other) noexcept {
     if (this != &other) {
@@ -32,6 +36,7 @@ RenderMesh& RenderMesh::operator=(RenderMesh&& other) noexcept {
         index_buffer_ = std::exchange(other.index_buffer_, 0);
         vertex_count_ = std::exchange(other.vertex_count_, 0);
         index_count_ = std::exchange(other.index_count_, 0);
+        skinned_ = std::exchange(other.skinned_, false);
     }
     return *this;
 }
