@@ -1,6 +1,11 @@
 # Scratch
 pr.txt
 
+# Models dropped in the working directory to try the importer. Samples that are
+# meant to be kept belong in assets/samples/, so only the root is ignored.
+/*.glb
+/*.gltf
+
 # Written at runtime by Dear ImGui: the local docking layout, not project state
 imgui.ini
 
