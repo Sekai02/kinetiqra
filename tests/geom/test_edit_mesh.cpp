@@ -1,0 +1,180 @@
+#include <kinetiqra/geom/Bake.hpp>
+#include <kinetiqra/geom/EditMesh.hpp>
+#include <kinetiqra/geom/Primitives.hpp>
+
+#include <doctest/doctest.h>
+
+using kinetiqra::geom::bake;
+using kinetiqra::geom::CornerId;
+using kinetiqra::geom::Domain;
+using kinetiqra::geom::EditMesh;
+using kinetiqra::geom::FaceId;
+using kinetiqra::geom::kNormal;
+using kinetiqra::geom::kPosition;
+using kinetiqra::geom::kUv;
+using kinetiqra::geom::make_box;
+using kinetiqra::geom::VertexId;
+using kinetiqra::math::Vec2;
+using kinetiqra::math::Vec3;
+
+TEST_CASE("channels grow with the domain they describe") {
+    EditMesh mesh;
+    auto* mask = mesh.attributes().add<float>("mask", Domain::Vertex, 0.5F);
+    REQUIRE(mask != nullptr);
+    CHECK(mask->empty());
+
+    mesh.add_vertex(Vec3{0.0F});
+    mesh.add_vertex(Vec3{1.0F});
+
+    // The pointer is into the channel, which the mesh resized underneath it.
+    const auto* grown = mesh.attributes().find<float>("mask", Domain::Vertex);
+    REQUIRE(grown != nullptr);
+    CHECK(grown->size() == 2);
+    CHECK((*grown)[0] == doctest::Approx(0.5F));
+}
+
+TEST_CASE("a channel is rejected when the name is taken by another type") {
+    EditMesh mesh;
+    REQUIRE(mesh.attributes().add<float>("weight", Domain::Vertex) != nullptr);
+
+    CHECK(mesh.attributes().add<Vec3>("weight", Domain::Vertex) == nullptr);
+    CHECK(mesh.attributes().find<Vec3>("weight", Domain::Vertex) == nullptr);
+    CHECK(mesh.attributes().find<float>("weight", Domain::Vertex) != nullptr);
+}
+
+TEST_CASE("two corners on one vertex can disagree") {
+    // The whole reason attributes live on corners: one vertex, two faces, two
+    // different UVs. With attributes on vertices this could not be expressed.
+    EditMesh mesh;
+    const VertexId shared = mesh.add_vertex(Vec3{0.0F, 0.0F, 0.0F});
+    const VertexId a = mesh.add_vertex(Vec3{1.0F, 0.0F, 0.0F});
+    const VertexId b = mesh.add_vertex(Vec3{0.0F, 1.0F, 0.0F});
+    const VertexId c = mesh.add_vertex(Vec3{-1.0F, 0.0F, 0.0F});
+
+    std::vector<CornerId> first;
+    std::vector<CornerId> second;
+    mesh.add_face({shared, a, b}, &first);
+    mesh.add_face({shared, b, c}, &second);
+
+    mesh.set_uv(first[0], Vec2{0.0F, 0.0F});
+    mesh.set_uv(second[0], Vec2{1.0F, 0.0F});
+
+    const auto* uvs = mesh.attributes().find<Vec2>(kUv, Domain::Corner);
+    REQUIRE(uvs != nullptr);
+
+    CHECK(mesh.corner_vertex(first[0]) == shared);
+    CHECK(mesh.corner_vertex(second[0]) == shared);
+    CHECK((*uvs)[first[0].index].x == doctest::Approx(0.0F));
+    CHECK((*uvs)[second[0].index].x == doctest::Approx(1.0F));
+    CHECK(mesh.vertex_count() == 4);
+}
+
+TEST_CASE("validation catches a corner left pointing at a removed vertex") {
+    EditMesh mesh;
+    const VertexId a = mesh.add_vertex(Vec3{0.0F});
+    const VertexId b = mesh.add_vertex(Vec3{1.0F, 0.0F, 0.0F});
+    const VertexId c = mesh.add_vertex(Vec3{0.0F, 1.0F, 0.0F});
+    mesh.add_face({a, b, c});
+
+    CHECK(mesh.validate().empty());
+
+    REQUIRE(mesh.remove_vertex(b));
+
+    // The face was deliberately left alone, so the mesh is now inconsistent and
+    // says so rather than being quietly repaired.
+    CHECK_FALSE(mesh.validate().empty());
+}
+
+TEST_CASE("a box has eight vertices and twenty-four corners") {
+    const EditMesh box = make_box();
+
+    CHECK(box.vertex_count() == 8);
+    CHECK(box.corner_count() == 24);
+    CHECK(box.face_count() == 6);
+    CHECK(box.validate().empty());
+}
+
+TEST_CASE("a box is one metre on a side by default") {
+    const EditMesh box = make_box();
+
+    float min_x = 1e9F;
+    float max_x = -1e9F;
+    for (const FaceId face : box.faces()) {
+        for (const CornerId corner : *box.face_corners(face)) {
+            const float x = box.position(box.corner_vertex(corner)).x;
+            min_x = std::min(min_x, x);
+            max_x = std::max(max_x, x);
+        }
+    }
+
+    CHECK(max_x - min_x == doctest::Approx(1.0F));
+    CHECK(min_x == doctest::Approx(-0.5F));
+}
+
+TEST_CASE("baking a box splits every corner and keeps the triangles") {
+    const EditMesh box = make_box();
+    const auto baked = bake(box);
+
+    // Six faces, each with its own normal and its own UV square, so no two
+    // corners agree and nothing merges: twenty-four vertices, twelve triangles.
+    CHECK(baked.vertex_count() == 24);
+    CHECK(baked.triangle_count() == 12);
+    CHECK(baked.indices.size() == 36);
+
+    for (const std::uint32_t index : baked.indices) {
+        CHECK(index < baked.vertex_count());
+    }
+}
+
+TEST_CASE("corners that agree collapse instead of duplicating") {
+    // Two triangles sharing an edge, with matching normals and UVs everywhere.
+    EditMesh mesh;
+    const VertexId a = mesh.add_vertex(Vec3{0.0F, 0.0F, 0.0F});
+    const VertexId b = mesh.add_vertex(Vec3{1.0F, 0.0F, 0.0F});
+    const VertexId c = mesh.add_vertex(Vec3{1.0F, 0.0F, 1.0F});
+    const VertexId d = mesh.add_vertex(Vec3{0.0F, 0.0F, 1.0F});
+
+    std::vector<CornerId> first;
+    std::vector<CornerId> second;
+    mesh.add_face({a, b, c}, &first);
+    mesh.add_face({a, c, d}, &second);
+
+    for (const CornerId corner : first) {
+        mesh.set_normal(corner, Vec3{0.0F, 1.0F, 0.0F});
+        mesh.set_uv(corner, Vec2{0.0F, 0.0F});
+    }
+    for (const CornerId corner : second) {
+        mesh.set_normal(corner, Vec3{0.0F, 1.0F, 0.0F});
+        mesh.set_uv(corner, Vec2{0.0F, 0.0F});
+    }
+
+    const auto baked = bake(mesh);
+
+    // Six corners over four positions, but every corner agrees, so the shared
+    // edge is not duplicated.
+    CHECK(mesh.corner_count() == 6);
+    CHECK(baked.vertex_count() == 4);
+    CHECK(baked.triangle_count() == 2);
+}
+
+TEST_CASE("a quad is triangulated as a fan") {
+    EditMesh mesh;
+    const VertexId a = mesh.add_vertex(Vec3{0.0F, 0.0F, 0.0F});
+    const VertexId b = mesh.add_vertex(Vec3{1.0F, 0.0F, 0.0F});
+    const VertexId c = mesh.add_vertex(Vec3{1.0F, 0.0F, 1.0F});
+    const VertexId d = mesh.add_vertex(Vec3{0.0F, 0.0F, 1.0F});
+    mesh.add_face({a, b, c, d});
+
+    const auto baked = bake(mesh);
+
+    CHECK(baked.triangle_count() == 2);
+    CHECK(baked.vertex_count() == 4);
+}
+
+TEST_CASE("baking an empty mesh yields nothing rather than failing") {
+    const EditMesh mesh;
+    const auto baked = bake(mesh);
+
+    CHECK(baked.vertex_count() == 0);
+    CHECK(baked.triangle_count() == 0);
+}

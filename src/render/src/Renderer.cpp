@@ -30,6 +30,11 @@ bool Renderer::initialise(GlLoader loader, const std::string& shader_directory,
         return false;
     }
 
+    if (!mesh_shader_.load(shader_directory + "/mesh.vert", shader_directory + "/mesh.frag",
+                           error)) {
+        return false;
+    }
+
     glCreateVertexArrays(1, &empty_vertex_array_);
 
     glEnable(GL_DEPTH_TEST);
@@ -64,6 +69,26 @@ void Renderer::draw_grid(const math::Mat4& view_projection, const math::Vec3& ca
     glBindVertexArray(0);
 }
 
+void Renderer::draw_mesh(const RenderMesh& mesh, const math::Mat4& model,
+                         const math::Mat4& view_projection,
+                         const math::Vec3& camera_position) const {
+    if (!initialised_ || !mesh.valid()) {
+        return;
+    }
+
+    mesh_shader_.bind();
+    mesh_shader_.set_uniform("u_model", model);
+    mesh_shader_.set_uniform("u_view_projection", view_projection);
+    mesh_shader_.set_uniform("u_camera_position", camera_position);
+
+    // The normal matrix, so that a non-uniform scale does not shear the normals
+    // away from the surface.
+    mesh_shader_.set_uniform("u_normal_matrix",
+                             math::Mat4(glm::transpose(glm::inverse(math::Mat3(model)))));
+
+    mesh.draw();
+}
+
 void Renderer::shutdown() {
     if (empty_vertex_array_ != 0) {
         glDeleteVertexArrays(1, &empty_vertex_array_);
@@ -71,6 +96,7 @@ void Renderer::shutdown() {
     }
 
     grid_shader_ = Shader{};
+    mesh_shader_ = Shader{};
     initialised_ = false;
 }
 

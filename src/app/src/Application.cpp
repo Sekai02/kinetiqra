@@ -1,6 +1,9 @@
 #include <kinetiqra/app/Application.hpp>
+#include <kinetiqra/geom/Bake.hpp>
+#include <kinetiqra/geom/Primitives.hpp>
 
 #include <GLFW/glfw3.h>
+#include <glm/gtc/matrix_transform.hpp>
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
@@ -71,6 +74,11 @@ bool Application::initialise(std::string& error) {
 
     imgui_ready_ = true;
 
+    // A box, built in code rather than loaded, so that the mesh representation
+    // is exercised without a file format in the way.
+    mesh_ = geom::make_box();
+    render_mesh_.upload(geom::bake(mesh_));
+
     std::printf("kinetiqra %s\n", KINETIQRA_VERSION);
     std::printf("  renderer: %s\n", renderer_.driver_description().c_str());
 
@@ -107,7 +115,14 @@ void Application::draw_frame() {
     if (height > 0) {
         const auto& camera = viewport_.camera();
         const float aspect = static_cast<float>(width) / static_cast<float>(height);
-        renderer_.draw_grid(camera.view_projection(aspect), camera.position(), camera.far_plane());
+        const math::Mat4 view_projection = camera.view_projection(aspect);
+
+        renderer_.draw_grid(view_projection, camera.position(), camera.far_plane());
+
+        // Lifted by half its height so it rests on the grid rather than being
+        // cut in half by it.
+        const math::Mat4 model = glm::translate(math::Mat4{1.0F}, math::Vec3{0.0F, 0.5F, 0.0F});
+        renderer_.draw_mesh(render_mesh_, model, view_projection, camera.position());
     }
 
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -146,6 +161,17 @@ void Application::draw_camera_panel() {
                     static_cast<double>(camera.target().y), static_cast<double>(camera.target().z));
         ImGui::Text("distance  %.2f m", static_cast<double>(camera.distance()));
         ImGui::Text("%.1f fps", static_cast<double>(ImGui::GetIO().Framerate));
+
+        ImGui::Separator();
+
+        // The ratio between these is the point. Attributes live on corners, so
+        // the box has eight vertices and twenty-four corners, and the bake
+        // splits every corner the GPU cannot share.
+        ImGui::TextUnformatted("mesh");
+        ImGui::Text("editable  %zu vertices, %zu corners, %zu faces", mesh_.vertex_count(),
+                    mesh_.corner_count(), mesh_.face_count());
+        ImGui::Text("baked     %zu vertices, %zu indices", render_mesh_.vertex_count(),
+                    render_mesh_.index_count());
     }
     ImGui::End();
 }

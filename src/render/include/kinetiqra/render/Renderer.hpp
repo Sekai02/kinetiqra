@@ -1,6 +1,7 @@
 #pragma once
 
 #include <kinetiqra/math/Types.hpp>
+#include <kinetiqra/render/RenderMesh.hpp>
 #include <kinetiqra/render/Shader.hpp>
 
 #include <cstdint>
@@ -29,12 +30,19 @@ public:
     void draw_grid(const math::Mat4& view_projection, const math::Vec3& camera_position,
                    float far_plane) const;
 
+    // Lit by a single directional light, which is enough to tell a flat face
+    // from a smooth one and therefore enough to see whether the corner normals
+    // survived the bake.
+    void draw_mesh(const RenderMesh& mesh, const math::Mat4& model,
+                   const math::Mat4& view_projection, const math::Vec3& camera_position) const;
+
     void shutdown();
 
     [[nodiscard]] std::string driver_description() const;
 
 private:
     Shader grid_shader_;
+    Shader mesh_shader_;
 
     // Core profile forbids drawing without a vertex array bound, even when the
     // vertices are generated entirely in the shader.

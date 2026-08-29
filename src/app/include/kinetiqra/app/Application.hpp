@@ -1,6 +1,8 @@
 #pragma once
 
 #include <kinetiqra/app/Viewport.hpp>
+#include <kinetiqra/geom/EditMesh.hpp>
+#include <kinetiqra/render/RenderMesh.hpp>
 #include <kinetiqra/render/Renderer.hpp>
 
 #include <string>
@@ -41,6 +43,12 @@ private:
     GLFWwindow* window_{nullptr};
     render::Renderer renderer_;
     Viewport viewport_;
+
+    // The editable mesh is the model; the render mesh is a copy of it in the
+    // shape the GPU needs. Keeping both means the split stays visible, and it
+    // is what the counts in the panel report.
+    geom::EditMesh mesh_;
+    render::RenderMesh render_mesh_;
 
     bool imgui_ready_{false};
 };
