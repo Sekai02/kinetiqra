@@ -49,7 +49,11 @@ struct PrimitiveData {
     std::vector<math::Vec3> positions;
     std::vector<math::Vec3> normals;
     std::vector<math::Vec2> uvs;
+    std::vector<math::Vec4> joints;
+    std::vector<math::Vec4> weights;
     std::vector<std::uint32_t> indices;
+
+    [[nodiscard]] bool skinned() const { return !joints.empty() && !weights.empty(); }
 };
 
 bool read_primitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primitive,
@@ -81,6 +85,29 @@ bool read_primitive(const fastgltf::Asset& asset, const fastgltf::Primitive& pri
         out.uvs.resize(accessor.count);
         fastgltf::iterateAccessorWithIndex<math::Vec2>(
             asset, accessor, [&](math::Vec2 value, std::size_t index) { out.uvs[index] = value; });
+    }
+
+    // Joint indices arrive as bytes or shorts depending on how many joints the
+    // rig has; asking for u32vec4 lets fastgltf widen either one.
+    if (const auto* joints = primitive.findAttribute("JOINTS_0");
+        joints != primitive.attributes.end()) {
+        const auto& accessor = asset.accessors[joints->accessorIndex];
+        out.joints.resize(accessor.count);
+        fastgltf::iterateAccessorWithIndex<glm::u32vec4>(
+            asset, accessor, [&](glm::u32vec4 value, std::size_t index) {
+                out.joints[index] =
+                    math::Vec4{static_cast<float>(value.x), static_cast<float>(value.y),
+                               static_cast<float>(value.z), static_cast<float>(value.w)};
+            });
+    }
+
+    if (const auto* weights = primitive.findAttribute("WEIGHTS_0");
+        weights != primitive.attributes.end()) {
+        const auto& accessor = asset.accessors[weights->accessorIndex];
+        out.weights.resize(accessor.count);
+        fastgltf::iterateAccessorWithIndex<math::Vec4>(
+            asset, accessor,
+            [&](math::Vec4 value, std::size_t index) { out.weights[index] = value; });
     }
 
     if (!primitive.indicesAccessor.has_value()) {
@@ -119,6 +146,24 @@ void append_primitive(const PrimitiveData& data, geom::EditMesh& mesh,
 
         const geom::VertexId id = mesh.add_vertex(key.value);
         welded.emplace(key, id);
+
+        // Skinning is per vertex, so it is written once, when the vertex is
+        // created. Vertices that weld together necessarily agree on it: they
+        // are the same point of the model, and a joint owns a point, not a
+        // corner.
+        if (data.skinned() && index < data.joints.size() && index < data.weights.size()) {
+            const math::Vec4 weights = data.weights[index];
+
+            // The specification allows weights that do not sum to one, and a
+            // vertex whose weights sum to something else shrinks or flies off
+            // when the skeleton moves.
+            const float total = weights.x + weights.y + weights.z + weights.w;
+            const math::Vec4 normalised =
+                total > 0.0F ? weights / total : math::Vec4{1.0F, 0.0F, 0.0F, 0.0F};
+
+            mesh.set_skinning(id, data.joints[index], normalised);
+        }
+
         return id;
     };
 
@@ -158,11 +203,18 @@ void append_primitive(const PrimitiveData& data, geom::EditMesh& mesh,
 }
 
 scene::NodeId add_node(const fastgltf::Asset& asset, std::size_t node_index, scene::Scene& target,
-                       scene::NodeId parent, const std::vector<scene::MeshId>& meshes) {
+                       scene::NodeId parent, const std::vector<scene::MeshId>& meshes,
+                       std::vector<scene::NodeId>& by_index) {
     const fastgltf::Node& source = asset.nodes[node_index];
 
     const scene::NodeId id = target.add_node(std::string(source.name), parent);
     scene::Node* node = target.node(id);
+
+    // Skins refer to joints by glTF node index, so the mapping has to survive
+    // past this walk.
+    if (node_index < by_index.size()) {
+        by_index[node_index] = id;
+    }
 
     // DecomposeNodeMatrices was requested, so a node that stored a matrix has
     // already been turned into translation, rotation and scale for us.
@@ -179,10 +231,54 @@ scene::NodeId add_node(const fastgltf::Asset& asset, std::size_t node_index, sce
     }
 
     for (const std::size_t child : source.children) {
-        add_node(asset, child, target, id, meshes);
+        add_node(asset, child, target, id, meshes, by_index);
     }
 
     return id;
+}
+
+// Reads the skins once the nodes exist, then attaches each one to the node that
+// carries the skinned mesh.
+void add_skins(const fastgltf::Asset& asset, scene::Scene& target,
+               const std::vector<scene::NodeId>& by_index) {
+    std::vector<scene::SkinId> skins;
+    skins.reserve(asset.skins.size());
+
+    for (const fastgltf::Skin& source : asset.skins) {
+        scene::Skin skin;
+        skin.joints.reserve(source.joints.size());
+
+        for (const std::size_t joint : source.joints) {
+            skin.joints.push_back(joint < by_index.size() ? by_index[joint] : scene::NodeId{});
+        }
+
+        if (source.inverseBindMatrices.has_value()) {
+            const auto& accessor = asset.accessors[source.inverseBindMatrices.value()];
+            skin.inverse_bind.resize(accessor.count);
+            fastgltf::iterateAccessorWithIndex<math::Mat4>(
+                asset, accessor,
+                [&](math::Mat4 value, std::size_t index) { skin.inverse_bind[index] = value; });
+        } else {
+            // The specification says an absent accessor means every matrix is
+            // the identity, which is the case for a mesh already modelled in
+            // each joint's own space.
+            skin.inverse_bind.assign(skin.joints.size(), math::Mat4{1.0F});
+        }
+
+        skins.push_back(target.add_skin(std::move(skin)));
+    }
+
+    for (std::size_t index = 0; index < asset.nodes.size(); ++index) {
+        const fastgltf::Node& source = asset.nodes[index];
+        if (!source.skinIndex.has_value() || index >= by_index.size()) {
+            continue;
+        }
+
+        const std::size_t skin_index = source.skinIndex.value();
+        if (skin_index < skins.size()) {
+            target.set_skin(by_index[index], skins[skin_index]);
+        }
+    }
 }
 
 }  // namespace
@@ -252,17 +348,22 @@ bool import_gltf(const std::filesystem::path& path, scene::Scene& target, std::s
         meshes.push_back(target.add_mesh(std::move(mesh)));
     }
 
+    std::vector<scene::NodeId> by_index(asset.nodes.size());
+
     if (asset.scenes.empty()) {
         for (std::size_t index = 0; index < asset.nodes.size(); ++index) {
-            add_node(asset, index, target, scene::NodeId{}, meshes);
+            add_node(asset, index, target, scene::NodeId{}, meshes, by_index);
         }
-        return true;
+    } else {
+        const std::size_t scene_index = asset.defaultScene.value_or(0);
+        for (const std::size_t root : asset.scenes[scene_index].nodeIndices) {
+            add_node(asset, root, target, scene::NodeId{}, meshes, by_index);
+        }
     }
 
-    const std::size_t scene_index = asset.defaultScene.value_or(0);
-    for (const std::size_t root : asset.scenes[scene_index].nodeIndices) {
-        add_node(asset, root, target, scene::NodeId{}, meshes);
-    }
+    // After the nodes, because a skin names its joints by node index and those
+    // handles do not exist until the tree has been walked.
+    add_skins(asset, target, by_index);
 
     return true;
 }

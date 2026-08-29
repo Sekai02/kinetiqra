@@ -10,10 +10,17 @@ namespace {
 // A candidate GPU vertex: everything that has to agree for two corners to share
 // one. Compared by bits rather than by value, so that corners written from the
 // same source data merge and corners that differ at all do not.
+//
+// Joints and weights are part of the key even though they are vertex
+// attributes. They are constant across the corners of a vertex, so they never
+// cause a split on their own, but leaving them out would let two corners on
+// different vertices merge when their positions happen to coincide.
 struct Key {
     math::Vec3 position;
     math::Vec3 normal;
     math::Vec2 uv;
+    math::Vec4 joints;
+    math::Vec4 weights;
 
     bool operator==(const Key& other) const { return std::memcmp(this, &other, sizeof(Key)) == 0; }
 };
@@ -36,20 +43,31 @@ struct KeyHash {
 
 BakedMesh bake(const EditMesh& mesh) {
     BakedMesh baked;
+    baked.skinned = mesh.skinned();
 
     const auto* normals = mesh.attributes().find<math::Vec3>(kNormal, Domain::Corner);
     const auto* uvs = mesh.attributes().find<math::Vec2>(kUv, Domain::Corner);
+    const auto* joints = mesh.attributes().find<math::Vec4>(kJoints, Domain::Vertex);
+    const auto* weights = mesh.attributes().find<math::Vec4>(kWeights, Domain::Vertex);
 
     std::unordered_map<Key, std::uint32_t, KeyHash> emitted;
 
     const auto emit = [&](CornerId corner) -> std::uint32_t {
+        const VertexId vertex = mesh.corner_vertex(corner);
+
         Key key{};
-        key.position = mesh.position(mesh.corner_vertex(corner));
+        key.position = mesh.position(vertex);
         if (normals != nullptr && corner.index < normals->size()) {
             key.normal = (*normals)[corner.index];
         }
         if (uvs != nullptr && corner.index < uvs->size()) {
             key.uv = (*uvs)[corner.index];
+        }
+        if (joints != nullptr && vertex.index < joints->size()) {
+            key.joints = (*joints)[vertex.index];
+        }
+        if (weights != nullptr && vertex.index < weights->size()) {
+            key.weights = (*weights)[vertex.index];
         }
 
         if (auto found = emitted.find(key); found != emitted.end()) {
@@ -57,9 +75,17 @@ BakedMesh bake(const EditMesh& mesh) {
         }
 
         const auto index = static_cast<std::uint32_t>(baked.vertex_count());
+
         baked.vertices.insert(baked.vertices.end(),
                               {key.position.x, key.position.y, key.position.z, key.normal.x,
                                key.normal.y, key.normal.z, key.uv.x, key.uv.y});
+
+        if (baked.skinned) {
+            baked.vertices.insert(baked.vertices.end(),
+                                  {key.joints.x, key.joints.y, key.joints.z, key.joints.w,
+                                   key.weights.x, key.weights.y, key.weights.z, key.weights.w});
+        }
+
         emitted.emplace(key, index);
         return index;
     };

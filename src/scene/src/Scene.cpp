@@ -35,10 +35,46 @@ MeshId Scene::add_mesh(geom::EditMesh mesh) {
     return meshes_.insert(std::move(mesh));
 }
 
+SkinId Scene::add_skin(Skin skin) {
+    // A skin with a matrix count that disagrees with its joint count cannot be
+    // used: some joint would have no way back to bind space. Refusing it here
+    // means the renderer never has to wonder.
+    if (skin.joints.size() != skin.inverse_bind.size() || skin.joints.empty()) {
+        return SkinId{};
+    }
+
+    return skins_.insert(std::move(skin));
+}
+
 void Scene::set_mesh(NodeId node_id, MeshId mesh_id) {
     if (Node* target = nodes_.get(node_id); target != nullptr) {
         target->mesh = mesh_id;
     }
+}
+
+void Scene::set_skin(NodeId node_id, SkinId skin_id) {
+    if (Node* target = nodes_.get(node_id); target != nullptr) {
+        target->skin = skin_id;
+    }
+}
+
+std::vector<math::Mat4> Scene::joint_matrices(SkinId id) const {
+    const Skin* skin = skins_.get(id);
+    if (skin == nullptr) {
+        return {};
+    }
+
+    std::vector<math::Mat4> matrices;
+    matrices.reserve(skin->joints.size());
+
+    for (std::size_t joint = 0; joint < skin->joints.size(); ++joint) {
+        // Where the joint is now, undoing where it was when the mesh was bound.
+        // In the bind pose these cancel and the vertex is left where it was
+        // modelled, which is the property the tests pin down.
+        matrices.push_back(world_transform(skin->joints[joint]) * skin->inverse_bind[joint]);
+    }
+
+    return matrices;
 }
 
 std::vector<NodeId> Scene::nodes_in_order() const {
@@ -96,6 +132,7 @@ math::Mat4 Scene::world_transform(NodeId id) const {
 void Scene::clear() {
     nodes_.clear();
     meshes_.clear();
+    skins_.clear();
     roots_.clear();
 }
 

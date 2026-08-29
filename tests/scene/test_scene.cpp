@@ -2,6 +2,7 @@
 
 #include <doctest/doctest.h>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/matrix.hpp>
 
 using kinetiqra::math::Mat4;
 using kinetiqra::math::Vec3;
@@ -120,6 +121,84 @@ TEST_CASE("a mesh is reachable through the node that refers to it") {
     REQUIRE(scene.mesh(scene.node(node)->mesh) != nullptr);
     CHECK(scene.mesh(id)->vertex_count() == 1);
     CHECK(scene.mesh_count() == 1);
+}
+
+TEST_CASE("in the bind pose the joint matrices are the identity") {
+    Scene scene;
+    const NodeId root = scene.add_node("root");
+    const NodeId joint = scene.add_node("joint", root);
+    scene.node(joint)->transform.translation = Vec3{0.0F, 2.0F, 0.0F};
+
+    // The inverse bind matrix is, by definition, the inverse of the joint's
+    // world transform at the moment of binding.
+    kinetiqra::scene::Skin skin;
+    skin.joints = {joint};
+    skin.inverse_bind = {glm::inverse(scene.world_transform(joint))};
+
+    const auto id = scene.add_skin(skin);
+    REQUIRE(id.valid());
+
+    const auto matrices = scene.joint_matrices(id);
+    REQUIRE(matrices.size() == 1);
+
+    // Nothing has moved since binding, so the deformation is nothing at all.
+    for (int column = 0; column < 4; ++column) {
+        for (int row = 0; row < 4; ++row) {
+            CHECK(matrices[0][column][row] ==
+                  doctest::Approx(Mat4{1.0F}[column][row]).epsilon(1e-5));
+        }
+    }
+}
+
+TEST_CASE("moving a joint away from bind deforms by exactly that movement") {
+    Scene scene;
+    const NodeId joint = scene.add_node("joint");
+
+    kinetiqra::scene::Skin skin;
+    skin.joints = {joint};
+    skin.inverse_bind = {glm::inverse(scene.world_transform(joint))};
+    const auto id = scene.add_skin(skin);
+
+    scene.node(joint)->transform.translation = Vec3{3.0F, 0.0F, 0.0F};
+
+    const auto matrices = scene.joint_matrices(id);
+    const Vec3 moved = apply(matrices[0], Vec3{0.0F});
+
+    CHECK(moved.x == doctest::Approx(3.0F));
+}
+
+TEST_CASE("a parent joint carries its child") {
+    Scene scene;
+    const NodeId shoulder = scene.add_node("shoulder");
+    const NodeId elbow = scene.add_node("elbow", shoulder);
+    scene.node(elbow)->transform.translation = Vec3{0.0F, -1.0F, 0.0F};
+
+    kinetiqra::scene::Skin skin;
+    skin.joints = {shoulder, elbow};
+    skin.inverse_bind = {glm::inverse(scene.world_transform(shoulder)),
+                         glm::inverse(scene.world_transform(elbow))};
+    const auto id = scene.add_skin(skin);
+
+    scene.node(shoulder)->transform.translation = Vec3{0.0F, 5.0F, 0.0F};
+
+    const auto matrices = scene.joint_matrices(id);
+    REQUIRE(matrices.size() == 2);
+
+    // Both joints moved, because the elbow hangs off the shoulder.
+    CHECK(apply(matrices[0], Vec3{0.0F}).y == doctest::Approx(5.0F));
+    CHECK(apply(matrices[1], Vec3{0.0F}).y == doctest::Approx(5.0F));
+}
+
+TEST_CASE("a skin whose counts disagree is refused") {
+    Scene scene;
+    const NodeId joint = scene.add_node("joint");
+
+    kinetiqra::scene::Skin skin;
+    skin.joints = {joint};
+    skin.inverse_bind = {};
+
+    CHECK_FALSE(scene.add_skin(skin).valid());
+    CHECK(scene.joint_matrices(kinetiqra::scene::SkinId{}).empty());
 }
 
 TEST_CASE("clearing empties the scene") {

@@ -227,7 +227,158 @@ std::string cube_gltf() {
 })";
 }
 
+// A triangle bound to two joints, with weights that deliberately do not sum to
+// one so that the normalisation can be checked.
+std::string skinned_gltf() {
+    std::vector<std::uint8_t> buffer;
+
+    // Positions.
+    const float positions[3][3] = {{0.0F, 0.0F, 0.0F}, {1.0F, 0.0F, 0.0F}, {0.0F, 1.0F, 0.0F}};
+    for (const auto& position : positions) {
+        append(buffer, position[0]);
+        append(buffer, position[1]);
+        append(buffer, position[2]);
+    }
+
+    // Joint indices, unsigned short, four per vertex.
+    const std::size_t joints_offset = buffer.size();
+    const std::uint16_t joints[3][4] = {{0, 1, 0, 0}, {1, 0, 0, 0}, {0, 0, 0, 0}};
+    for (const auto& set : joints) {
+        for (const std::uint16_t joint : set) {
+            append(buffer, joint);
+        }
+    }
+
+    // Weights summing to two rather than one, on purpose.
+    const std::size_t weights_offset = buffer.size();
+    const float weights[3][4] = {
+        {1.0F, 1.0F, 0.0F, 0.0F}, {2.0F, 0.0F, 0.0F, 0.0F}, {2.0F, 0.0F, 0.0F, 0.0F}};
+    for (const auto& set : weights) {
+        for (const float weight : set) {
+            append(buffer, weight);
+        }
+    }
+
+    // Two inverse bind matrices, both the identity.
+    const std::size_t bind_offset = buffer.size();
+    for (int matrix = 0; matrix < 2; ++matrix) {
+        for (int column = 0; column < 4; ++column) {
+            for (int row = 0; row < 4; ++row) {
+                append(buffer, column == row ? 1.0F : 0.0F);
+            }
+        }
+    }
+
+    const std::size_t indices_offset = buffer.size();
+    append(buffer, static_cast<std::uint16_t>(0));
+    append(buffer, static_cast<std::uint16_t>(1));
+    append(buffer, static_cast<std::uint16_t>(2));
+
+    return R"({
+  "asset": { "version": "2.0" },
+  "scene": 0,
+  "scenes": [ { "nodes": [0, 1] } ],
+  "nodes": [
+    { "name": "skinned", "mesh": 0, "skin": 0 },
+    { "name": "root joint", "children": [2] },
+    { "name": "tip joint", "translation": [0, 1, 0] }
+  ],
+  "skins": [ { "joints": [1, 2], "inverseBindMatrices": 4 } ],
+  "meshes": [ { "primitives": [ { "attributes":
+    { "POSITION": 0, "JOINTS_0": 1, "WEIGHTS_0": 2 }, "indices": 3 } ] } ],
+  "accessors": [
+    { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
+      "min": [0,0,0], "max": [1,1,0] },
+    { "bufferView": 1, "componentType": 5123, "count": 3, "type": "VEC4" },
+    { "bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC4" },
+    { "bufferView": 3, "componentType": 5123, "count": 3, "type": "SCALAR" },
+    { "bufferView": 4, "componentType": 5126, "count": 2, "type": "MAT4" }
+  ],
+  "bufferViews": [
+    { "buffer": 0, "byteOffset": 0, "byteLength": 36 },
+    { "buffer": 0, "byteOffset": )" +
+           std::to_string(joints_offset) + R"(, "byteLength": 24 },
+    { "buffer": 0, "byteOffset": )" +
+           std::to_string(weights_offset) + R"(, "byteLength": 48 },
+    { "buffer": 0, "byteOffset": )" +
+           std::to_string(indices_offset) + R"(, "byteLength": 6 },
+    { "buffer": 0, "byteOffset": )" +
+           std::to_string(bind_offset) + R"(, "byteLength": 128 }
+  ],
+  "buffers": [ { "byteLength": )" +
+           std::to_string(buffer.size()) + R"(, "uri": "data:application/octet-stream;base64,)" +
+           base64(buffer) + R"(" } ]
+})";
+}
+
 }  // namespace
+
+TEST_CASE("a skinned mesh imports with its skin and its joints") {
+    const TemporaryFile file(skinned_gltf());
+
+    Scene scene;
+    std::string error;
+    REQUIRE_MESSAGE(import_gltf(file.path(), scene, error), error);
+
+    const auto* mesh = scene.mesh(scene.meshes()[0]);
+    REQUIRE(mesh != nullptr);
+    CHECK(mesh->skinned());
+
+    // The node carrying the mesh is the one that carries the skin.
+    const auto* node = scene.node(scene.roots()[0]);
+    REQUIRE(node != nullptr);
+    REQUIRE(node->skin.valid());
+
+    const auto* skin = scene.skin(node->skin);
+    REQUIRE(skin != nullptr);
+    CHECK(skin->joints.size() == 2);
+    CHECK(skin->inverse_bind.size() == 2);
+}
+
+TEST_CASE("weights are normalised on the way in") {
+    const TemporaryFile file(skinned_gltf());
+
+    Scene scene;
+    std::string error;
+    REQUIRE(import_gltf(file.path(), scene, error));
+
+    const auto* mesh = scene.mesh(scene.meshes()[0]);
+    const auto* weights = mesh->attributes().find<kinetiqra::math::Vec4>(
+        kinetiqra::geom::kWeights, kinetiqra::geom::Domain::Vertex);
+    REQUIRE(weights != nullptr);
+
+    // The file says one and one, which sums to two; a vertex weighted like that
+    // would fly off when the skeleton moves.
+    for (const auto& weight : *weights) {
+        const float total = weight.x + weight.y + weight.z + weight.w;
+        CHECK(total == doctest::Approx(1.0F));
+    }
+}
+
+TEST_CASE("a skinned mesh bakes with joints and weights aboard") {
+    const TemporaryFile file(skinned_gltf());
+
+    Scene scene;
+    std::string error;
+    REQUIRE(import_gltf(file.path(), scene, error));
+
+    const auto baked = bake(*scene.mesh(scene.meshes()[0]));
+
+    CHECK(baked.skinned);
+    CHECK(baked.floats_per_vertex() == 16);
+    CHECK(baked.vertex_count() == 3);
+}
+
+TEST_CASE("an unskinned file produces no skin") {
+    const TemporaryFile file(triangle_gltf(true));
+
+    Scene scene;
+    std::string error;
+    REQUIRE(import_gltf(file.path(), scene, error));
+
+    CHECK_FALSE(scene.mesh(scene.meshes()[0])->skinned());
+    CHECK_FALSE(scene.node(scene.roots()[0])->skin.valid());
+}
 
 TEST_CASE("a triangle imports with three vertices and one face") {
     const TemporaryFile file(triangle_gltf(true));
