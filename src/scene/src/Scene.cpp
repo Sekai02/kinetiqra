@@ -78,6 +78,82 @@ std::vector<math::Mat4> Scene::joint_matrices(SkinId id, const Pose* pose) const
     return matrices;
 }
 
+std::vector<math::Mat4> Scene::vertex_matrices(NodeId id, const Pose* pose) const {
+    const Node* node = nodes_.get(id);
+    if (node == nullptr) {
+        return {};
+    }
+
+    const geom::EditMesh* mesh = meshes_.get(node->mesh);
+    if (mesh == nullptr) {
+        return {};
+    }
+
+    const auto* joints = mesh->attributes().find<math::Vec4>(geom::kJoints, geom::Domain::Vertex);
+    const auto* weights = mesh->attributes().find<math::Vec4>(geom::kWeights, geom::Domain::Vertex);
+    const std::size_t count = mesh->attributes().count(geom::Domain::Vertex);
+
+    if (!node->skin.valid() || joints == nullptr || weights == nullptr) {
+        return std::vector<math::Mat4>(count, world_transform(id, pose));
+    }
+
+    // The node's own transform has no part in this. glTF says the transform of
+    // the node carrying a skinned mesh is ignored, because the joints have
+    // already placed the mesh, and applying both would move it twice.
+    const std::vector<math::Mat4> skin = joint_matrices(node->skin, pose);
+
+    std::vector<math::Mat4> matrices(count, math::Mat4{1.0F});
+
+    for (std::size_t vertex = 0; vertex < count; ++vertex) {
+        const math::Vec4 index = (*joints)[vertex];
+        const math::Vec4 weight = (*weights)[vertex];
+
+        math::Mat4 blended(0.0F);
+        float total = 0.0F;
+
+        for (int slot = 0; slot < 4; ++slot) {
+            const auto joint = static_cast<std::size_t>(index[slot]);
+            if (joint < skin.size() && weight[slot] != 0.0F) {
+                blended += skin[joint] * weight[slot];
+                total += weight[slot];
+            }
+        }
+
+        // A vertex the rig forgot keeps the identity rather than collapsing to
+        // the origin, which is easier to see and to fix than a spike.
+        matrices[vertex] = total > 0.0F ? blended * (1.0F / total) : math::Mat4{1.0F};
+    }
+
+    return matrices;
+}
+
+std::vector<math::Vec3> Scene::world_positions(NodeId id, const Pose* pose) const {
+    const Node* node = nodes_.get(id);
+    if (node == nullptr) {
+        return {};
+    }
+
+    const geom::EditMesh* mesh = meshes_.get(node->mesh);
+    if (mesh == nullptr) {
+        return {};
+    }
+
+    const auto* positions =
+        mesh->attributes().find<math::Vec3>(geom::kPosition, geom::Domain::Vertex);
+    if (positions == nullptr) {
+        return {};
+    }
+
+    const std::vector<math::Mat4> matrices = vertex_matrices(id, pose);
+
+    std::vector<math::Vec3> world(positions->size(), math::Vec3{0.0F, 0.0F, 0.0F});
+    for (std::size_t vertex = 0; vertex < positions->size() && vertex < matrices.size(); ++vertex) {
+        world[vertex] = math::Vec3{matrices[vertex] * math::Vec4{(*positions)[vertex], 1.0F}};
+    }
+
+    return world;
+}
+
 std::vector<NodeId> Scene::nodes_in_order() const {
     std::vector<NodeId> ordered;
     ordered.reserve(nodes_.size());

@@ -261,3 +261,73 @@ TEST_CASE("baking an empty mesh yields nothing rather than failing") {
     CHECK(baked.vertex_count() == 0);
     CHECK(baked.triangle_count() == 0);
 }
+
+TEST_CASE("removing a face takes its corners with it") {
+    EditMesh mesh = make_box();
+    const FaceId face = mesh.faces().front();
+
+    REQUIRE(mesh.remove_face(face));
+
+    CHECK(mesh.face_count() == 5);
+    CHECK(mesh.corner_count() == 20);
+    CHECK_FALSE(mesh.contains(face));
+
+    // The vertices stay: a vertex outlives the faces that used it, and deciding
+    // whether one has been orphaned is not the mesh's call.
+    CHECK(mesh.vertex_count() == 8);
+    CHECK(mesh.validate().empty());
+
+    // Removing twice is reported rather than corrupting anything.
+    CHECK_FALSE(mesh.remove_face(face));
+}
+
+TEST_CASE("a clone is a copy, not a second view of the same mesh") {
+    EditMesh original = make_box();
+    const VertexId vertex =
+        original.corner_vertex(original.face_corners(original.faces().front())->front());
+    const Vec3 before = original.position(vertex);
+
+    EditMesh copy = original.clone();
+
+    CHECK(copy.vertex_count() == original.vertex_count());
+    CHECK(copy.face_count() == original.face_count());
+    CHECK(copy.corner_count() == original.corner_count());
+
+    copy.set_position(vertex, Vec3{99.0F, 99.0F, 99.0F});
+
+    // The channels are held behind pointers, so a shallow copy would have moved
+    // both of these at once.
+    CHECK(copy.position(vertex).x == doctest::Approx(99.0F));
+    CHECK(original.position(vertex).x == doctest::Approx(before.x));
+}
+
+TEST_CASE("a clone keeps every channel, including the ones added later") {
+    EditMesh original = make_box();
+    original.attributes().add<float>("thickness", Domain::Vertex, 0.5F);
+
+    const EditMesh copy = original.clone();
+
+    CHECK(copy.attributes().names(Domain::Vertex) == original.attributes().names(Domain::Vertex));
+
+    const auto* thickness = copy.attributes().find<float>("thickness", Domain::Vertex);
+    REQUIRE(thickness != nullptr);
+    CHECK(thickness->size() == copy.vertex_count());
+    CHECK((*thickness)[0] == doctest::Approx(0.5F));
+}
+
+TEST_CASE("a cloned mesh grows on its own") {
+    EditMesh original = make_box();
+    EditMesh copy = original.clone();
+
+    // The fill value travels with the channel, so a vertex added to the copy is
+    // filled the way the original would have filled it.
+    copy.attributes().add<float>("thickness", Domain::Vertex, 0.25F);
+    const VertexId added = copy.add_vertex(Vec3{0.0F, 0.0F, 0.0F});
+
+    CHECK(copy.vertex_count() == original.vertex_count() + 1);
+    CHECK(original.vertex_count() == 8);
+
+    const auto* thickness = copy.attributes().find<float>("thickness", Domain::Vertex);
+    REQUIRE(thickness != nullptr);
+    CHECK((*thickness)[added.index] == doctest::Approx(0.25F));
+}

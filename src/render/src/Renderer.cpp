@@ -42,11 +42,28 @@ bool Renderer::initialise(GlLoader loader, const std::string& shader_directory,
         return false;
     }
 
+    if (!overlay_shader_.load(shader_directory + "/overlay.vert",
+                              shader_directory + "/overlay.frag", error)) {
+        return false;
+    }
+
     glCreateBuffers(1, &joint_buffer_);
     glNamedBufferData(joint_buffer_, static_cast<GLsizeiptr>(kMaxJoints * sizeof(math::Mat4)),
                       nullptr, GL_DYNAMIC_DRAW);
 
     glCreateVertexArrays(1, &empty_vertex_array_);
+
+    glCreateBuffers(1, &overlay_buffer_);
+    glCreateVertexArrays(1, &overlay_vertex_array_);
+    glEnableVertexArrayAttrib(overlay_vertex_array_, 0);
+    glVertexArrayAttribFormat(overlay_vertex_array_, 0, 3, GL_FLOAT, GL_FALSE, 0);
+    glVertexArrayAttribBinding(overlay_vertex_array_, 0, 0);
+    glVertexArrayVertexBuffer(overlay_vertex_array_, 0, overlay_buffer_, 0,
+                              static_cast<GLsizei>(sizeof(math::Vec3)));
+
+    // So that the overlay's vertex shader can choose how large a vertex marker
+    // is, rather than every point being one pixel.
+    glEnable(GL_PROGRAM_POINT_SIZE);
 
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LEQUAL);
@@ -126,7 +143,77 @@ void Renderer::draw_skinned_mesh(const RenderMesh& mesh, const std::vector<math:
     mesh.draw();
 }
 
+void Renderer::upload_overlay(const std::vector<math::Vec3>& points) const {
+    // Reallocated rather than patched: the size changes with the selection, and
+    // orphaning the old store lets the driver hand back memory the previous
+    // frame may still be reading.
+    glNamedBufferData(overlay_buffer_, static_cast<GLsizeiptr>(points.size() * sizeof(math::Vec3)),
+                      points.data(), GL_DYNAMIC_DRAW);
+}
+
+void Renderer::draw_points(const std::vector<math::Vec3>& points, const math::Mat4& model,
+                           const math::Mat4& view_projection, const math::Vec4& colour,
+                           float size) const {
+    if (!initialised_ || points.empty()) {
+        return;
+    }
+
+    upload_overlay(points);
+
+    overlay_shader_.bind();
+    overlay_shader_.set_uniform("u_model", model);
+    overlay_shader_.set_uniform("u_view_projection", view_projection);
+    overlay_shader_.set_uniform("u_colour", colour);
+    overlay_shader_.set_uniform("u_point_size", size);
+
+    // Vertices behind the surface stay clickable, which is the difference
+    // between editing a mesh and orbiting around it looking for a handle.
+    glDisable(GL_DEPTH_TEST);
+    glBindVertexArray(overlay_vertex_array_);
+    glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(points.size()));
+    glBindVertexArray(0);
+    glEnable(GL_DEPTH_TEST);
+}
+
+void Renderer::draw_overlay(const std::vector<math::Vec3>& triangles, const math::Mat4& model,
+                            const math::Mat4& view_projection, const math::Vec4& colour) const {
+    if (!initialised_ || triangles.empty()) {
+        return;
+    }
+
+    upload_overlay(triangles);
+
+    overlay_shader_.bind();
+    overlay_shader_.set_uniform("u_model", model);
+    overlay_shader_.set_uniform("u_view_projection", view_projection);
+    overlay_shader_.set_uniform("u_colour", colour);
+    overlay_shader_.set_uniform("u_point_size", 1.0F);
+
+    // Pulled towards the camera by a fraction of a depth unit. Without this the
+    // highlight and the face it covers sit at exactly the same depth and the
+    // two flicker against each other as the camera moves.
+    glEnable(GL_POLYGON_OFFSET_FILL);
+    glPolygonOffset(-1.0F, -1.0F);
+
+    glBindVertexArray(overlay_vertex_array_);
+    glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(triangles.size()));
+    glBindVertexArray(0);
+
+    glPolygonOffset(0.0F, 0.0F);
+    glDisable(GL_POLYGON_OFFSET_FILL);
+}
+
 void Renderer::shutdown() {
+    if (overlay_vertex_array_ != 0) {
+        glDeleteVertexArrays(1, &overlay_vertex_array_);
+        overlay_vertex_array_ = 0;
+    }
+
+    if (overlay_buffer_ != 0) {
+        glDeleteBuffers(1, &overlay_buffer_);
+        overlay_buffer_ = 0;
+    }
+
     if (empty_vertex_array_ != 0) {
         glDeleteVertexArrays(1, &empty_vertex_array_);
         empty_vertex_array_ = 0;
@@ -140,6 +227,7 @@ void Renderer::shutdown() {
     grid_shader_ = Shader{};
     mesh_shader_ = Shader{};
     skinned_shader_ = Shader{};
+    overlay_shader_ = Shader{};
     initialised_ = false;
 }
 

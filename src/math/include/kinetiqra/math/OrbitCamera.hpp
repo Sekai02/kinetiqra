@@ -1,5 +1,6 @@
 #pragma once
 
+#include <kinetiqra/math/Ray.hpp>
 #include <kinetiqra/math/Types.hpp>
 
 namespace kinetiqra::math {
@@ -43,6 +44,14 @@ public:
     [[nodiscard]] Mat4 view() const;
     [[nodiscard]] Mat4 projection(float aspect) const;
     [[nodiscard]] Mat4 view_projection(float aspect) const;
+
+    // The ray under a pixel, measured from the top left corner the way a window
+    // system reports the pointer.
+    //
+    // This is the inverse of the projection this class already builds, which is
+    // why it lives here, and it keeps the unprojection free of any window
+    // system, so picking can be reasoned about without one.
+    [[nodiscard]] Ray ray_through(Vec2 pixel, Vec2 viewport_size) const;
 
     [[nodiscard]] Vec3 target() const { return target_; }
 
