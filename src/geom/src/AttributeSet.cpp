@@ -17,6 +17,19 @@ std::vector<std::string> AttributeSet::names(Domain domain) const {
     return result;
 }
 
+AttributeSet AttributeSet::clone() const {
+    AttributeSet copy;
+    copy.counts_ = counts_;
+
+    for (std::size_t domain = 0; domain < kDomainCount; ++domain) {
+        for (const auto& [name, channel] : channels_[domain]) {
+            copy.channels_[domain].emplace(name, channel->clone());
+        }
+    }
+
+    return copy;
+}
+
 void AttributeSet::resize(Domain domain, std::size_t count) {
     counts_[index_of(domain)] = count;
 

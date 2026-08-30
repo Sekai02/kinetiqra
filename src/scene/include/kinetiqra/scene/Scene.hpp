@@ -103,6 +103,27 @@ public:
     [[nodiscard]] std::vector<math::Mat4> joint_matrices(SkinId id,
                                                          const Pose* pose = nullptr) const;
 
+    // One matrix per vertex slot of this node's mesh, carrying a vertex from
+    // the mesh's own space into the world.
+    //
+    // For an ordinary mesh that is just the node's world transform, the same
+    // for every vertex. For a skinned one it is the blend of its joints, and it
+    // is emphatically not the node's transform: a mesh bound in centimetres
+    // with the scale living in its inverse bind matrices sits a hundred times
+    // too large until the joints have had their say. Anything that has to agree
+    // with what is drawn, such as picking or a selection overlay, has to go
+    // through this rather than through `world_transform`.
+    //
+    // Empty if the node has no mesh.
+    [[nodiscard]] std::vector<math::Mat4> vertex_matrices(NodeId id,
+                                                          const Pose* pose = nullptr) const;
+
+    // Where this node's vertices actually are, in world space, indexed by
+    // vertex slot. Dead slots hold whatever the channel holds and are not
+    // meaningful; ask the mesh which handles are live.
+    [[nodiscard]] std::vector<math::Vec3> world_positions(NodeId id,
+                                                          const Pose* pose = nullptr) const;
+
     [[nodiscard]] const std::vector<NodeId>& roots() const { return roots_; }
 
     // Every live node, parents before children, which is the order a renderer

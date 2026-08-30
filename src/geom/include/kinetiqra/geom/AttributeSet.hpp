@@ -64,6 +64,14 @@ public:
 
     [[nodiscard]] std::vector<std::string> names(Domain domain) const;
 
+    // A deep copy, channels and their fill values included.
+    //
+    // Named rather than offered as a copy constructor: the channels are held
+    // behind unique pointers, so copying one is a real cost, and it should be
+    // something a caller asked for rather than something that happens by
+    // passing a mesh by value.
+    [[nodiscard]] AttributeSet clone() const;
+
     // Grows or shrinks every channel of the domain. New elements take the fill
     // value the channel was created with.
     void resize(Domain domain, std::size_t count);
@@ -87,6 +95,10 @@ private:
         virtual void resize(std::size_t count) = 0;
         [[nodiscard]] virtual std::size_t size() const = 0;
         [[nodiscard]] virtual std::type_index type() const = 0;
+
+        // Copying through the base, which is the only way to duplicate a
+        // channel whose element type has been erased.
+        [[nodiscard]] virtual std::unique_ptr<Channel> clone() const = 0;
     };
 
     template <typename T>
@@ -99,6 +111,12 @@ private:
         [[nodiscard]] std::size_t size() const override { return data.size(); }
 
         [[nodiscard]] std::type_index type() const override { return typeid(T); }
+
+        [[nodiscard]] std::unique_ptr<Channel> clone() const override {
+            auto copy = std::make_unique<TypedChannel<T>>(fill);
+            copy->data = data;
+            return copy;
+        }
 
         std::vector<T> data;
         T fill;

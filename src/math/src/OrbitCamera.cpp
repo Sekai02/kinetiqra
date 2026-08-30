@@ -67,4 +67,31 @@ Mat4 OrbitCamera::view_projection(float aspect) const {
     return projection(aspect) * view();
 }
 
+Ray OrbitCamera::ray_through(Vec2 pixel, Vec2 viewport_size) const {
+    Ray ray;
+    ray.origin = position();
+    ray.direction = forward();
+
+    if (viewport_size.x <= 0.0F || viewport_size.y <= 0.0F) {
+        return ray;
+    }
+
+    // From pixels to the cube the projection maps the frustum onto, which runs
+    // from minus one to one with y pointing up rather than down.
+    const float x = ((2.0F * pixel.x) / viewport_size.x) - 1.0F;
+    const float y = 1.0F - ((2.0F * pixel.y) / viewport_size.y);
+
+    const float aspect = viewport_size.x / viewport_size.y;
+
+    // The half extents of the near plane, which is the same relationship pan()
+    // uses to turn pixels into world space.
+    const float half_height = std::tan(field_of_view_ * 0.5F);
+    const float half_width = half_height * aspect;
+
+    const Vec3 direction = forward() + (right() * (x * half_width)) + (up() * (y * half_height));
+
+    ray.direction = glm::normalize(direction);
+    return ray;
+}
+
 }  // namespace kinetiqra::math

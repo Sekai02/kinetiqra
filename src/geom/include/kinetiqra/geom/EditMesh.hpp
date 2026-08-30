@@ -63,6 +63,19 @@ public:
     // caller rather than something to do silently here.
     bool remove_vertex(VertexId id);
 
+    // Removes the face and the corners it owns. Vertices are left alone: a
+    // vertex outlives the faces that use it, and deciding whether one has
+    // become orphaned is the caller's business, not the mesh's.
+    bool remove_face(FaceId id);
+
+    // A deep copy of the whole mesh, attribute channels included.
+    //
+    // Named for the same reason `AttributeSet::clone` is: copying a mesh is
+    // expensive enough that it should never happen by accident. Undo uses it to
+    // put back an operation that added and removed elements, where remembering
+    // a value on each side would not be enough.
+    [[nodiscard]] EditMesh clone() const;
+
     [[nodiscard]] bool contains(VertexId id) const { return vertices_.contains(id); }
 
     [[nodiscard]] bool contains(CornerId id) const { return corners_.contains(id); }
@@ -78,8 +91,9 @@ public:
 
     [[nodiscard]] std::size_t face_count() const { return faces_.size(); }
 
-    // Every live face, in slot order. Iteration is over the dense storage, so
-    // removed slots are skipped rather than compacted away.
+    // Every live element, in slot order. Iteration is over the dense storage,
+    // so removed slots are skipped rather than compacted away.
+    [[nodiscard]] std::vector<VertexId> vertices() const;
     [[nodiscard]] std::vector<FaceId> faces() const;
 
     [[nodiscard]] AttributeSet& attributes() { return attributes_; }

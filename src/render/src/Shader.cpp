@@ -142,6 +142,11 @@ void Shader::set_uniform(std::string_view name, const math::Mat4& value) const {
     glUniformMatrix4fv(glGetUniformLocation(program_, key.c_str()), 1, GL_FALSE, &value[0][0]);
 }
 
+void Shader::set_uniform(std::string_view name, const math::Vec4& value) const {
+    const std::string key(name);
+    glUniform4fv(glGetUniformLocation(program_, key.c_str()), 1, &value[0]);
+}
+
 void Shader::set_uniform(std::string_view name, const math::Vec3& value) const {
     const std::string key(name);
     glUniform3fv(glGetUniformLocation(program_, key.c_str()), 1, &value[0]);

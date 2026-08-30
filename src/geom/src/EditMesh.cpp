@@ -46,6 +46,31 @@ bool EditMesh::remove_vertex(VertexId id) {
     return vertices_.remove(id);
 }
 
+bool EditMesh::remove_face(FaceId id) {
+    const Face* face = faces_.get(id);
+    if (face == nullptr) {
+        return false;
+    }
+
+    // The corners belong to the face and go with it. Their slots in the corner
+    // channels are left behind, the same way a removed vertex leaves one, which
+    // costs a little memory and saves reindexing every handle in the mesh.
+    for (const CornerId corner : face->corners) {
+        corners_.remove(corner);
+    }
+
+    return faces_.remove(id);
+}
+
+EditMesh EditMesh::clone() const {
+    EditMesh copy;
+    copy.vertices_ = vertices_;
+    copy.corners_ = corners_;
+    copy.faces_ = faces_;
+    copy.attributes_ = attributes_.clone();
+    return copy;
+}
+
 VertexId EditMesh::corner_vertex(CornerId id) const {
     const VertexId* vertex = corners_.get(id);
     return vertex != nullptr ? *vertex : VertexId{};
@@ -54,6 +79,19 @@ VertexId EditMesh::corner_vertex(CornerId id) const {
 const std::vector<CornerId>* EditMesh::face_corners(FaceId id) const {
     const Face* face = faces_.get(id);
     return face != nullptr ? &face->corners : nullptr;
+}
+
+std::vector<VertexId> EditMesh::vertices() const {
+    std::vector<VertexId> result;
+    result.reserve(vertices_.size());
+
+    for (std::uint32_t slot = 0; slot < vertices_.slot_count(); ++slot) {
+        if (vertices_.alive(slot)) {
+            result.push_back(vertices_.id_at(slot));
+        }
+    }
+
+    return result;
 }
 
 std::vector<FaceId> EditMesh::faces() const {
