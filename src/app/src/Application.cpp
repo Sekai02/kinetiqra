@@ -19,17 +19,36 @@
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
+#include <imgui_internal.h>
 
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <memory>
 
 namespace kinetiqra::app {
 
 namespace {
 
+// Not the size the window opens at, which is maximised. This is the size it
+// returns to when someone un-maximises it.
 constexpr int kInitialWidth = 1280;
 constexpr int kInitialHeight = 800;
+
+// The dockspace is named here rather than left to ImGui to invent, because the
+// layout has to be built before the dockspace is submitted and that means
+// knowing its id first. Any constant will do, as long as it is the same one
+// every frame.
+constexpr ImGuiID kDockspaceId = 0x4B494E45;  // "KINE"
+
+// How the window is carved up on a first run, as fractions of what is left at
+// each step rather than of the whole, since every split divides the remainder
+// of the one before it.
+constexpr float kTimelineHeight = 0.20F;
+constexpr float kLeftColumnWidth = 0.19F;
+constexpr float kRightColumnWidth = 0.26F;
+constexpr float kCameraHeight = 0.32F;
+constexpr float kPoseHeight = 0.55F;
 
 // How far the pointer may travel between press and release and still count as a
 // click rather than as a camera drag. Both use the left button, and a picking
@@ -78,6 +97,12 @@ bool Application::initialise(const std::filesystem::path& model, std::string& er
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
 
+    // Open filling the screen, the way an editor is expected to. Maximised
+    // rather than fullscreen: the title bar stays, the taskbar is respected,
+    // and the window can be moved and shrunk without a shortcut invented for
+    // the purpose.
+    glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);
+
     window_ = glfwCreateWindow(kInitialWidth, kInitialHeight, "kinetiqra", nullptr, nullptr);
     if (window_ == nullptr) {
         // Almost always a driver without 4.5 core, which is worth saying plainly
@@ -85,6 +110,13 @@ bool Application::initialise(const std::filesystem::path& model, std::string& er
         error = "could not create a window with an OpenGL 4.5 core context";
         return false;
     }
+
+    // The hint above is ignored by some window managers, including the X11 one
+    // this is developed on, where a window created with it comes up at the size
+    // it was asked for and never maximises. Asking again once the window exists
+    // is honoured, so both are here: the hint avoids a visible resize where it
+    // works, and this covers the rest.
+    glfwMaximizeWindow(window_);
 
     glfwMakeContextCurrent(window_);
     glfwSwapInterval(1);
@@ -99,6 +131,12 @@ bool Application::initialise(const std::filesystem::path& model, std::string& er
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     ImGui::StyleColorsDark();
+
+    // Asked now, before the first frame reads the file. A layout the user
+    // arranged is theirs to keep, so the built-in one is only laid out when
+    // there is nothing to keep; otherwise it would be quietly overwritten on
+    // every start.
+    layout_ready_ = io.IniFilename != nullptr && std::filesystem::exists(io.IniFilename);
 
     if (!ImGui_ImplGlfw_InitForOpenGL(window_, true)) {
         error = "could not initialise the ImGui GLFW backend";
@@ -613,12 +651,102 @@ void Application::run() {
     }
 }
 
+void Application::draw_menu_bar() {
+    if (!ImGui::BeginMainMenuBar()) {
+        return;
+    }
+
+    if (ImGui::BeginMenu("Window")) {
+        // The way back. Without it anyone whose imgui.ini predates the built-in
+        // layout, which is anyone who has run the editor before, would never
+        // see it.
+        if (ImGui::MenuItem("Reset layout")) {
+            layout_ready_ = false;
+        }
+        ImGui::EndMenu();
+    }
+
+    ImGui::EndMainMenuBar();
+}
+
+// The shape Unity and Blender share, and share because it works: the tree down
+// one side, what is selected down the other, the clip along the bottom, and the
+// world filling everything left over.
+//
+// DockBuilder lives in imgui_internal.h because the docking API has not settled
+// yet. It is the only way to place windows from code, and every editor built on
+// ImGui reaches for it.
+void Application::build_default_layout(ImGuiID dockspace) {
+    ImGui::DockBuilderRemoveNode(dockspace);
+    // Only the DockSpace flag: the passthrough centre is asked for again on
+    // every frame by the dockspace itself, so setting it here as well would
+    // just be saying it twice.
+    ImGui::DockBuilderAddNode(dockspace, ImGuiDockNodeFlags_DockSpace);
+
+    // Before any split. The header says so, and without it the ratios below are
+    // measured against a node of no size and come out wrong.
+    ImGui::DockBuilderSetNodeSize(dockspace, ImGui::GetMainViewport()->WorkSize);
+
+    ImGuiID centre = dockspace;
+
+    // The clip first, so that it runs the whole width rather than only the part
+    // the columns leave behind.
+    const ImGuiID bottom =
+        ImGui::DockBuilderSplitNode(centre, ImGuiDir_Down, kTimelineHeight, nullptr, &centre);
+
+    const ImGuiID left =
+        ImGui::DockBuilderSplitNode(centre, ImGuiDir_Left, kLeftColumnWidth, nullptr, &centre);
+    const ImGuiID right =
+        ImGui::DockBuilderSplitNode(centre, ImGuiDir_Right, kRightColumnWidth, nullptr, &centre);
+
+    ImGuiID left_top = left;
+    const ImGuiID left_bottom =
+        ImGui::DockBuilderSplitNode(left, ImGuiDir_Down, kCameraHeight, nullptr, &left_top);
+
+    ImGuiID right_top = right;
+    const ImGuiID right_bottom =
+        ImGui::DockBuilderSplitNode(right, ImGuiDir_Down, kPoseHeight, nullptr, &right_top);
+
+    ImGui::DockBuilderDockWindow("Scene", left_top);
+    ImGui::DockBuilderDockWindow("Camera", left_bottom);
+    ImGui::DockBuilderDockWindow("Edit", right_top);
+    ImGui::DockBuilderDockWindow("Pose", right_bottom);
+    ImGui::DockBuilderDockWindow("Timeline", bottom);
+
+    // Whatever is left is the central node, and the world already shows through
+    // it because the dockspace was asked for a passthrough centre.
+    ImGui::DockBuilderFinish(dockspace);
+}
+
 void Application::draw_frame() {
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
-    ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(),
+    draw_menu_bar();
+
+    // Maximising is a request the window manager grants a frame or two later,
+    // so the first frames still measure the window at the size it was created
+    // at. The splits below are worked out once and then kept in pixels, so
+    // building too early leaves columns sized for a window half as wide.
+    //
+    // Waiting for two frames that agree is enough, and is a property of the
+    // window rather than a number of frames guessed at.
+    const ImVec2 work = ImGui::GetMainViewport()->WorkSize;
+    const bool settled = work.x > 0.0F && work.x == settled_size_.x && work.y == settled_size_.y;
+    settled_size_ = math::Vec2{work.x, work.y};
+
+    // Before the dockspace is submitted, not after. By the time it has been
+    // submitted for this frame the panels have already been told where they go,
+    // and rearranging the nodes behind them changes nothing they can still
+    // read. Getting this backwards leaves the panels floating and looks exactly
+    // like a layout that was never written.
+    if (!layout_ready_ && settled) {
+        build_default_layout(kDockspaceId);
+        layout_ready_ = true;
+    }
+
+    ImGui::DockSpaceOverViewport(kDockspaceId, ImGui::GetMainViewport(),
                                  ImGuiDockNodeFlags_PassthruCentralNode);
 
     ImGuizmo::BeginFrame();
@@ -720,7 +848,7 @@ void Application::draw_camera_panel() {
     // pass that needs more than one view.
     if (ImGui::Begin("Camera")) {
         const auto& camera = viewport_.camera();
-        ImGui::TextUnformatted("Drag to orbit, shift or middle drag to pan, scroll to zoom.");
+        ImGui::TextWrapped("Drag to orbit, shift or middle drag to pan, scroll to zoom.");
         ImGui::Separator();
         ImGui::Text("target    %.2f, %.2f, %.2f m", static_cast<double>(camera.target().x),
                     static_cast<double>(camera.target().y), static_cast<double>(camera.target().z));
@@ -853,21 +981,9 @@ void Application::draw_pose_panel() {
             pose_dragging_ = false;
         }
 
-        ImGui::Separator();
-        ImGui::Text("history  %zu", commands_.depth());
-        ImGui::BeginDisabled(!commands_.can_undo());
-        if (ImGui::Button("Undo")) {
-            undo();
-        }
-        ImGui::EndDisabled();
-        ImGui::SameLine();
-        ImGui::BeginDisabled(!commands_.can_redo());
-        if (ImGui::Button("Redo")) {
-            redo();
-        }
-        ImGui::EndDisabled();
-        ImGui::SameLine();
-        ImGui::TextUnformatted("Ctrl+Z, Ctrl+Y");
+        // The history used to be repeated here as well. It belongs to the
+        // session rather than to whichever node is selected, so it lives in the
+        // Edit panel and only there.
     }
     ImGui::End();
 }

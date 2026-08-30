@@ -45,6 +45,16 @@ public:
 
 private:
     void draw_frame();
+    void draw_menu_bar();
+
+    // Places the panels the way the editor opens on a first run. Called when
+    // there was no imgui.ini to honour, and again when Reset layout is asked
+    // for, which is the only way back once one exists.
+    //
+    // Takes the dockspace as a plain unsigned int, which is what ImGuiID is, so
+    // that this header does not have to drag imgui into everything that
+    // includes it.
+    void build_default_layout(unsigned int dockspace);
     void update_camera();
     void draw_camera_panel();
     void draw_scene_panel();
@@ -172,6 +182,15 @@ private:
     bool pose_dragging_{false};
 
     bool imgui_ready_{false};
+
+    // True once the panels have somewhere to be: either an imgui.ini that was
+    // already on disk, or the built-in layout laid out on the first frame.
+    // Reset layout clears it, and the next frame builds again.
+    bool layout_ready_{false};
+
+    // What the window measured last frame, so that the layout waits until the
+    // window manager has finished maximising it.
+    math::Vec2 settled_size_{0.0F, 0.0F};
 };
 
 }  // namespace kinetiqra::app
