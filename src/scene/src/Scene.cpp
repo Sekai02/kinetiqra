@@ -36,6 +36,14 @@ MeshId Scene::add_mesh(geom::EditMesh mesh) {
     return meshes_.insert(std::move(mesh));
 }
 
+ImageId Scene::add_image(Image image) {
+    return images_.insert(std::move(image));
+}
+
+MaterialId Scene::add_material(Material material) {
+    return materials_.insert(std::move(material));
+}
+
 SkinId Scene::add_skin(Skin skin) {
     // A skin with a matrix count that disagrees with its joint count cannot be
     // used: some joint would have no way back to bind space. Refusing it here
@@ -194,6 +202,60 @@ std::vector<MeshId> Scene::meshes() const {
     return result;
 }
 
+namespace {
+
+// Handles in the order their arena handed them out, which is the order they
+// were read from the file and therefore the order the indices in a mesh's
+// material channel count in.
+template <typename T, typename Tag>
+std::vector<core::Handle<Tag>> live_in_order(const core::Arena<T, Tag>& arena) {
+    std::vector<core::Handle<Tag>> result;
+    result.reserve(arena.size());
+
+    for (std::uint32_t slot = 0; slot < arena.slot_count(); ++slot) {
+        if (arena.alive(slot)) {
+            result.push_back(arena.id_at(slot));
+        }
+    }
+
+    return result;
+}
+
+}  // namespace
+
+std::vector<MaterialId> Scene::materials() const {
+    return live_in_order(materials_);
+}
+
+std::vector<ImageId> Scene::images() const {
+    return live_in_order(images_);
+}
+
+MaterialId Scene::material_at(std::size_t index) const {
+    const std::vector<MaterialId> all = materials();
+    return index < all.size() ? all[index] : MaterialId{};
+}
+
+std::size_t Scene::index_of(MaterialId id) const {
+    const std::vector<MaterialId> all = materials();
+    for (std::size_t index = 0; index < all.size(); ++index) {
+        if (all[index] == id) {
+            return index;
+        }
+    }
+    return all.size();
+}
+
+std::size_t Scene::index_of(ImageId id) const {
+    const std::vector<ImageId> all = images();
+    for (std::size_t index = 0; index < all.size(); ++index) {
+        if (all[index] == id) {
+            return index;
+        }
+    }
+    return all.size();
+}
+
 math::Mat4 Scene::world_transform(NodeId id, const Pose* pose) const {
     math::Mat4 result{1.0F};
 
@@ -215,6 +277,8 @@ void Scene::clear() {
     nodes_.clear();
     meshes_.clear();
     skins_.clear();
+    images_.clear();
+    materials_.clear();
     roots_.clear();
 }
 

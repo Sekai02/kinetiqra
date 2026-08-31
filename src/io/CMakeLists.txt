@@ -12,4 +12,5 @@ kinetiqra_add_module(io
         kinetiqra::scene
         kinetiqra::anim
         fastgltf::fastgltf
+        stb::stb
 )

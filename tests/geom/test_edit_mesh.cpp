@@ -9,6 +9,7 @@ using kinetiqra::geom::CornerId;
 using kinetiqra::geom::Domain;
 using kinetiqra::geom::EditMesh;
 using kinetiqra::geom::FaceId;
+using kinetiqra::geom::kMaterial;
 using kinetiqra::geom::kNormal;
 using kinetiqra::geom::kPosition;
 using kinetiqra::geom::kUv;
@@ -172,17 +173,18 @@ TEST_CASE("a quad is triangulated as a fan") {
     CHECK(baked.vertex_count() == 4);
 }
 
-TEST_CASE("an unskinned mesh bakes to eight floats a vertex") {
+TEST_CASE("an unskinned mesh bakes to twelve floats a vertex") {
     const EditMesh box = make_box();
     const auto baked = bake(box);
 
+    // Position, normal, uv, tangent.
     CHECK_FALSE(box.skinned());
     CHECK_FALSE(baked.skinned);
-    CHECK(baked.floats_per_vertex() == 8);
-    CHECK(baked.vertices.size() == baked.vertex_count() * 8);
+    CHECK(baked.floats_per_vertex() == 12);
+    CHECK(baked.vertices.size() == baked.vertex_count() * 12);
 }
 
-TEST_CASE("skinning a vertex makes the mesh bake to sixteen floats a vertex") {
+TEST_CASE("skinning a vertex makes the mesh bake to twenty floats a vertex") {
     EditMesh mesh;
     const VertexId a = mesh.add_vertex(Vec3{0.0F, 0.0F, 0.0F});
     const VertexId b = mesh.add_vertex(Vec3{1.0F, 0.0F, 0.0F});
@@ -199,9 +201,9 @@ TEST_CASE("skinning a vertex makes the mesh bake to sixteen floats a vertex") {
 
     const auto baked = bake(mesh);
     CHECK(baked.skinned);
-    CHECK(baked.floats_per_vertex() == 16);
+    CHECK(baked.floats_per_vertex() == 20);
     CHECK(baked.vertex_count() == 3);
-    CHECK(baked.vertices.size() == 48);
+    CHECK(baked.vertices.size() == 60);
 }
 
 TEST_CASE("joints and weights land on the vertex they belong to") {
@@ -218,10 +220,11 @@ TEST_CASE("joints and weights land on the vertex they belong to") {
     const auto baked = bake(mesh);
 
     // The first emitted vertex is the first corner of the only face, which is
-    // vertex a, and its joint index sits at offset eight in the layout.
+    // vertex a. Position, normal, uv and tangent come first, so its joint index
+    // sits at offset twelve and its weight at sixteen.
     CHECK(baked.vertices[0] == doctest::Approx(0.0F));
-    CHECK(baked.vertices[8] == doctest::Approx(3.0F));
-    CHECK(baked.vertices[12] == doctest::Approx(1.0F));
+    CHECK(baked.vertices[12] == doctest::Approx(3.0F));
+    CHECK(baked.vertices[16] == doctest::Approx(1.0F));
 }
 
 TEST_CASE("corners of one skinned vertex still merge when they agree") {
@@ -330,4 +333,75 @@ TEST_CASE("a cloned mesh grows on its own") {
     const auto* thickness = copy.attributes().find<float>("thickness", Domain::Vertex);
     REQUIRE(thickness != nullptr);
     CHECK((*thickness)[added.index] == doctest::Approx(0.25F));
+}
+
+TEST_CASE("a mesh with no material bakes to a single section") {
+    const EditMesh box = make_box();
+    const auto baked = bake(box);
+
+    // Saying nothing about materials is the same as saying everything is one,
+    // so a caller can always just walk the sections.
+    REQUIRE(baked.sections.size() == 1);
+    CHECK(baked.sections[0].material == 0);
+    CHECK(baked.sections[0].first_index == 0);
+    CHECK(baked.sections[0].index_count == baked.indices.size());
+}
+
+TEST_CASE("faces are grouped into one unbroken run per material") {
+    EditMesh box = make_box();
+    const std::vector<FaceId> faces = box.faces();
+    REQUIRE(faces.size() == 6);
+
+    // Deliberately interleaved, so that grouping has something to do: without
+    // it the runs would be broken into six pieces rather than two.
+    for (std::size_t i = 0; i < faces.size(); ++i) {
+        box.set_material(faces[i], i % 2 == 0 ? 0 : 7);
+    }
+
+    const auto baked = bake(box);
+
+    REQUIRE(baked.sections.size() == 2);
+    CHECK(baked.sections[0].material == 0);
+    CHECK(baked.sections[1].material == 7);
+
+    // Contiguous and covering everything, which is what makes a section a range
+    // rather than a list.
+    CHECK(baked.sections[0].first_index == 0);
+    CHECK(baked.sections[1].first_index == baked.sections[0].index_count);
+    CHECK(baked.sections[0].index_count + baked.sections[1].index_count == baked.indices.size());
+
+    // Three faces each, two triangles a face, three indices a triangle.
+    CHECK(baked.sections[0].index_count == 18);
+}
+
+TEST_CASE("sections come out in material order however the faces were numbered") {
+    EditMesh box = make_box();
+    const std::vector<FaceId> faces = box.faces();
+
+    box.set_material(faces[0], 5);
+    box.set_material(faces[1], 2);
+    for (std::size_t i = 2; i < faces.size(); ++i) {
+        box.set_material(faces[i], 5);
+    }
+
+    const auto baked = bake(box);
+
+    REQUIRE(baked.sections.size() == 2);
+    CHECK(baked.sections[0].material == 2);
+    CHECK(baked.sections[1].material == 5);
+}
+
+TEST_CASE("a face remembers the material it was given") {
+    EditMesh box = make_box();
+    const FaceId face = box.faces().front();
+
+    // Zero until asked otherwise, and the channel is not created until then.
+    CHECK(box.material(face) == 0);
+    CHECK_FALSE(box.attributes().has(kMaterial, Domain::Face));
+
+    box.set_material(face, 3);
+
+    CHECK(box.material(face) == 3);
+    CHECK(box.attributes().has(kMaterial, Domain::Face));
+    CHECK(box.material(box.faces()[1]) == 0);
 }

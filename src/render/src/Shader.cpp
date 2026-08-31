@@ -157,4 +157,9 @@ void Shader::set_uniform(std::string_view name, float value) const {
     glUniform1f(glGetUniformLocation(program_, key.c_str()), value);
 }
 
+void Shader::set_uniform(std::string_view name, int value) const {
+    const std::string key(name);
+    glUniform1i(glGetUniformLocation(program_, key.c_str()), value);
+}
+
 }  // namespace kinetiqra::render

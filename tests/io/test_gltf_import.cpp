@@ -482,7 +482,7 @@ TEST_CASE("a skinned mesh bakes with joints and weights aboard") {
     const auto baked = bake(*scene.mesh(scene.meshes()[0]));
 
     CHECK(baked.skinned);
-    CHECK(baked.floats_per_vertex() == 16);
+    CHECK(baked.floats_per_vertex() == 20);
     CHECK(baked.vertex_count() == 3);
 }
 

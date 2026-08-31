@@ -28,6 +28,24 @@ inline constexpr const char* kPosition = "position";  // Vec3, Vertex
 inline constexpr const char* kNormal = "normal";      // Vec3, Corner
 inline constexpr const char* kUv = "uv";              // Vec2, Corner
 
+// The direction the texture's U axis runs across the surface, with the
+// handedness of the frame in w.
+//
+// On the corner, like the normal and the UV it is derived from: a seam in the
+// UVs is a seam in the tangent, and a vertex sitting on one has no single
+// answer. Only a normal map needs it, and only geom knows how to work it out
+// when a file arrives without one.
+inline constexpr const char* kTangent = "tangent";  // Vec4, Corner
+
+// Which material paints this face, as an index into whatever list the owner of
+// the mesh keeps.
+//
+// An index and not a handle: a mesh must not know what a scene is, and this is
+// the same loose coupling glTF itself uses between a primitive and a material.
+// This is the first thing the engine has ever put on the face domain, which has
+// been waiting for it since the first commit.
+inline constexpr const char* kMaterial = "material";  // std::uint32_t, Face
+
 // Skinning, and note the domain: these are on the vertex, not the corner.
 //
 // A normal belongs to a corner because two faces meeting at a vertex may
@@ -105,12 +123,19 @@ public:
     void set_position(VertexId id, math::Vec3 value);
     void set_normal(CornerId id, math::Vec3 value);
     void set_uv(CornerId id, math::Vec2 value);
+    void set_tangent(CornerId id, math::Vec4 value);
 
     // Creates the joints and weights channels if they are not there yet, which
     // is what makes a mesh skinned as far as the bake is concerned.
     void set_skinning(VertexId id, math::Vec4 joints, math::Vec4 weights);
 
     [[nodiscard]] bool skinned() const;
+
+    // Which material paints a face, and the count of distinct ones. A mesh with
+    // no material channel answers zero for every face, which is the same as
+    // saying it is all one material.
+    [[nodiscard]] std::uint32_t material(FaceId id) const;
+    void set_material(FaceId id, std::uint32_t material);
 
     // Reports the first structural problem found, or an empty string. Used by
     // the tests and worth calling after an importer has filled a mesh in.

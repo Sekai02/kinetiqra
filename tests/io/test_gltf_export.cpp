@@ -538,3 +538,172 @@ TEST_CASE("a path that cannot be written is reported rather than passing") {
     CHECK_FALSE(export_gltf(blocker / "box.glb", written, {}, error));
     CHECK_FALSE(error.empty());
 }
+
+namespace {
+
+// A picture, as far as io is concerned.
+//
+// These bytes are never decoded on the way through: the scene keeps an image
+// encoded and the exporter writes the same bytes back, so what is being pinned
+// down here is that nothing touches them. A real PNG would test the same thing
+// and say less about why.
+std::vector<std::uint8_t> pretend_png() {
+    std::vector<std::uint8_t> bytes{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+    for (std::uint8_t value = 0; value < 64; ++value) {
+        bytes.push_back(value);
+    }
+    return bytes;
+}
+
+}  // namespace
+
+TEST_CASE("a material survives the round trip with its numbers") {
+    const TemporaryDirectory directory;
+
+    Scene written;
+
+    scene::Material material;
+    material.name = "skin";
+    material.base_colour = math::Vec4{0.25F, 0.5F, 0.75F, 1.0F};
+    material.metallic = 0.125F;
+    material.roughness = 0.875F;
+    material.emissive = math::Vec3{0.1F, 0.2F, 0.3F};
+    material.double_sided = true;
+    written.add_material(material);
+
+    written.set_mesh(written.add_node("box"), written.add_mesh(geom::make_box()));
+
+    std::string error;
+    REQUIRE_MESSAGE(export_gltf(directory.file("material.glb"), written, {}, error), error);
+
+    Scene read;
+    REQUIRE_MESSAGE(import_gltf(directory.file("material.glb"), read, error), error);
+
+    REQUIRE(read.material_count() == 1);
+    const scene::Material* imported = read.material(read.materials().front());
+    REQUIRE(imported != nullptr);
+
+    CHECK(imported->name == "skin");
+    CHECK(imported->base_colour.x == doctest::Approx(0.25F));
+    CHECK(imported->base_colour.z == doctest::Approx(0.75F));
+    CHECK(imported->metallic == doctest::Approx(0.125F));
+    CHECK(imported->roughness == doctest::Approx(0.875F));
+    CHECK(imported->emissive.y == doctest::Approx(0.2F));
+    CHECK(imported->double_sided);
+}
+
+TEST_CASE("an image comes back byte for byte") {
+    const TemporaryDirectory directory;
+
+    Scene written;
+
+    scene::Image image;
+    image.name = "diffuse";
+    image.mime_type = "image/png";
+    image.bytes = pretend_png();
+
+    scene::Material material;
+    material.base_colour_texture.image = written.add_image(image);
+    material.base_colour_texture.wrap_s = scene::Wrap::ClampToEdge;
+    material.base_colour_texture.wrap_t = scene::Wrap::MirroredRepeat;
+    written.add_material(material);
+
+    written.set_mesh(written.add_node("box"), written.add_mesh(geom::make_box()));
+
+    std::string error;
+    REQUIRE_MESSAGE(export_gltf(directory.file("textured.glb"), written, {}, error), error);
+
+    Scene read;
+    REQUIRE_MESSAGE(import_gltf(directory.file("textured.glb"), read, error), error);
+
+    REQUIRE(read.image_count() == 1);
+    const scene::Image* imported = read.image(read.images().front());
+    REQUIRE(imported != nullptr);
+
+    // Not merely the same size: keeping images encoded from end to end is what
+    // makes this exact, and it is the reason the engine needs no image encoder.
+    CHECK(imported->bytes == pretend_png());
+    CHECK(imported->mime_type == "image/png");
+
+    REQUIRE(read.material_count() == 1);
+    const scene::Material* painted = read.material(read.materials().front());
+    REQUIRE(painted != nullptr);
+    REQUIRE(painted->base_colour_texture.valid());
+    CHECK(painted->base_colour_texture.image == read.images().front());
+    CHECK(painted->base_colour_texture.wrap_s == scene::Wrap::ClampToEdge);
+    CHECK(painted->base_colour_texture.wrap_t == scene::Wrap::MirroredRepeat);
+}
+
+TEST_CASE("faces keep the material they were painted with") {
+    const TemporaryDirectory directory;
+
+    Scene written;
+    written.add_material(scene::Material{});
+
+    scene::Material second;
+    second.base_colour = math::Vec4{1.0F, 0.0F, 0.0F, 1.0F};
+    written.add_material(second);
+
+    geom::EditMesh box = geom::make_box();
+    const std::vector<geom::FaceId> faces = box.faces();
+    for (std::size_t i = 0; i < faces.size(); ++i) {
+        box.set_material(faces[i], i < 2 ? 0 : 1);
+    }
+
+    written.set_mesh(written.add_node("box"), written.add_mesh(std::move(box)));
+
+    std::string error;
+    REQUIRE_MESSAGE(export_gltf(directory.file("two.glb"), written, {}, error), error);
+
+    Scene read;
+    REQUIRE_MESSAGE(import_gltf(directory.file("two.glb"), read, error), error);
+
+    const geom::EditMesh* imported = read.mesh(read.meshes().front());
+    REQUIRE(imported != nullptr);
+
+    // Two faces of the first material and four of the second, as quads on the
+    // way out and as triangles on the way back.
+    std::size_t first = 0;
+    std::size_t rest = 0;
+    for (const geom::FaceId face : imported->faces()) {
+        (imported->material(face) == 0 ? first : rest)++;
+    }
+
+    CHECK(first == 4);
+    CHECK(rest == 8);
+}
+
+TEST_CASE("a material with no texture writes no image") {
+    const TemporaryDirectory directory;
+
+    Scene written;
+    written.add_material(scene::Material{});
+    written.set_mesh(written.add_node("box"), written.add_mesh(geom::make_box()));
+
+    std::string error;
+    REQUIRE_MESSAGE(export_gltf(directory.file("plain.glb"), written, {}, error), error);
+
+    Scene read;
+    REQUIRE_MESSAGE(import_gltf(directory.file("plain.glb"), read, error), error);
+
+    CHECK(read.material_count() == 1);
+    CHECK(read.image_count() == 0);
+    CHECK_FALSE(read.material(read.materials().front())->base_colour_texture.valid());
+}
+
+TEST_CASE("a scene with no materials at all still round trips") {
+    const TemporaryDirectory directory;
+
+    Scene written;
+    written.set_mesh(written.add_node("box"), written.add_mesh(geom::make_box()));
+
+    std::string error;
+    REQUIRE_MESSAGE(export_gltf(directory.file("bare.glb"), written, {}, error), error);
+
+    Scene read;
+    REQUIRE_MESSAGE(import_gltf(directory.file("bare.glb"), read, error), error);
+
+    CHECK(read.material_count() == 0);
+    CHECK(read.mesh_count() == 1);
+    CHECK(read.mesh(read.meshes().front())->face_count() == 12);
+}

@@ -150,7 +150,13 @@ private:
 // Splits the baked, interleaved vertices back into one array per attribute and
 // writes each as its own accessor. Returns the mesh's index, or kAbsent when
 // there was nothing to draw.
-std::size_t add_mesh(Writer& writer, const geom::EditMesh& source, const std::string& name) {
+//
+// One primitive per material, which undoes what the importer does: it melts
+// every primitive of a mesh into one editable mesh, and this puts the seams
+// back where the materials say they belong. The vertex arrays are shared
+// between them, so only the indices are split.
+std::size_t add_mesh(Writer& writer, const geom::EditMesh& source, const std::string& name,
+                     const std::vector<std::size_t>& materials) {
     const geom::BakedMesh baked = geom::bake(source);
     if (baked.indices.empty()) {
         // A mesh with no faces has no primitive to write, and glTF has no way
@@ -164,12 +170,14 @@ std::size_t add_mesh(Writer& writer, const geom::EditMesh& source, const std::st
     std::vector<float> positions;
     std::vector<float> normals;
     std::vector<float> uvs;
+    std::vector<float> tangents;
     std::vector<float> weights;
     std::vector<std::uint16_t> joints;
 
     positions.reserve(count * 3);
     normals.reserve(count * 3);
     uvs.reserve(count * 2);
+    tangents.reserve(count * 4);
 
     if (baked.skinned) {
         joints.reserve(count * 4);
@@ -182,56 +190,242 @@ std::size_t add_mesh(Writer& writer, const geom::EditMesh& source, const std::st
         positions.insert(positions.end(), data, data + 3);
         normals.insert(normals.end(), data + 3, data + 6);
         uvs.insert(uvs.end(), data + 6, data + 8);
+        tangents.insert(tangents.end(), data + 8, data + 12);
 
         if (baked.skinned) {
             for (std::size_t joint = 0; joint < 4; ++joint) {
-                const float index = std::clamp(data[8 + joint], 0.0F, kMaxJointIndex);
+                const float index = std::clamp(data[12 + joint], 0.0F, kMaxJointIndex);
                 joints.push_back(static_cast<std::uint16_t>(index));
             }
-            weights.insert(weights.end(), data + 12, data + 16);
+            weights.insert(weights.end(), data + 16, data + 20);
         }
     }
 
-    fastgltf::Primitive primitive;
-    primitive.type = fastgltf::PrimitiveType::Triangles;
-
+    // Written once and pointed at by every primitive of this mesh, since the
+    // split is only ever in the indices.
+    //
     // Positions carry bounds because the specification asks for them, and a
     // viewer that culls by bounding box draws nothing without them.
-    primitive.attributes.emplace_back(fastgltf::Attribute{
-        "POSITION", writer.add_floats(positions, 3, fastgltf::AccessorType::Vec3, true,
-                                      fastgltf::BufferTarget::ArrayBuffer)});
+    const std::size_t position_accessor = writer.add_floats(
+        positions, 3, fastgltf::AccessorType::Vec3, true, fastgltf::BufferTarget::ArrayBuffer);
 
-    // A channel that was never written holds zeros, and zeros are not a normal
-    // or a texture coordinate. Leaving the attribute out says so, rather than
-    // shipping a mesh that claims to have one.
-    if (!all_zero(normals)) {
-        primitive.attributes.emplace_back(fastgltf::Attribute{
-            "NORMAL", writer.add_floats(normals, 3, fastgltf::AccessorType::Vec3, false,
-                                        fastgltf::BufferTarget::ArrayBuffer)});
-    }
+    // A channel that was never written holds zeros, and zeros are not a normal,
+    // a texture coordinate or a tangent. Leaving the attribute out says so,
+    // rather than shipping a mesh that claims to have one.
+    const std::size_t normal_accessor =
+        all_zero(normals) ? kAbsent
+                          : writer.add_floats(normals, 3, fastgltf::AccessorType::Vec3, false,
+                                              fastgltf::BufferTarget::ArrayBuffer);
 
-    if (!all_zero(uvs)) {
-        primitive.attributes.emplace_back(fastgltf::Attribute{
-            "TEXCOORD_0", writer.add_floats(uvs, 2, fastgltf::AccessorType::Vec2, false,
-                                            fastgltf::BufferTarget::ArrayBuffer)});
-    }
+    const std::size_t uv_accessor =
+        all_zero(uvs) ? kAbsent
+                      : writer.add_floats(uvs, 2, fastgltf::AccessorType::Vec2, false,
+                                          fastgltf::BufferTarget::ArrayBuffer);
 
-    if (baked.skinned) {
-        primitive.attributes.emplace_back(
-            fastgltf::Attribute{"JOINTS_0", writer.add_joints(joints)});
-        primitive.attributes.emplace_back(fastgltf::Attribute{
-            "WEIGHTS_0", writer.add_floats(weights, 4, fastgltf::AccessorType::Vec4, false,
-                                           fastgltf::BufferTarget::ArrayBuffer)});
-    }
+    const std::size_t tangent_accessor =
+        all_zero(tangents) ? kAbsent
+                           : writer.add_floats(tangents, 4, fastgltf::AccessorType::Vec4, false,
+                                               fastgltf::BufferTarget::ArrayBuffer);
 
-    primitive.indicesAccessor = writer.add_indices(baked.indices);
+    const std::size_t joint_accessor = baked.skinned ? writer.add_joints(joints) : kAbsent;
+    const std::size_t weight_accessor =
+        baked.skinned ? writer.add_floats(weights, 4, fastgltf::AccessorType::Vec4, false,
+                                          fastgltf::BufferTarget::ArrayBuffer)
+                      : kAbsent;
 
     fastgltf::Mesh mesh;
     mesh.name = name.c_str();
-    mesh.primitives.emplace_back(std::move(primitive));
+
+    for (const geom::Section& section : baked.sections) {
+        if (section.index_count == 0) {
+            continue;
+        }
+
+        fastgltf::Primitive primitive;
+        primitive.type = fastgltf::PrimitiveType::Triangles;
+
+        primitive.attributes.emplace_back(fastgltf::Attribute{"POSITION", position_accessor});
+        if (normal_accessor != kAbsent) {
+            primitive.attributes.emplace_back(fastgltf::Attribute{"NORMAL", normal_accessor});
+        }
+        if (uv_accessor != kAbsent) {
+            primitive.attributes.emplace_back(fastgltf::Attribute{"TEXCOORD_0", uv_accessor});
+        }
+        if (tangent_accessor != kAbsent) {
+            primitive.attributes.emplace_back(fastgltf::Attribute{"TANGENT", tangent_accessor});
+        }
+        if (baked.skinned) {
+            primitive.attributes.emplace_back(fastgltf::Attribute{"JOINTS_0", joint_accessor});
+            primitive.attributes.emplace_back(fastgltf::Attribute{"WEIGHTS_0", weight_accessor});
+        }
+
+        const std::vector<std::uint32_t> indices(
+            baked.indices.begin() + static_cast<std::ptrdiff_t>(section.first_index),
+            baked.indices.begin() +
+                static_cast<std::ptrdiff_t>(section.first_index + section.index_count));
+
+        primitive.indicesAccessor = writer.add_indices(indices);
+
+        if (section.material < materials.size()) {
+            primitive.materialIndex = materials[section.material];
+        }
+
+        mesh.primitives.emplace_back(std::move(primitive));
+    }
+
+    if (mesh.primitives.empty()) {
+        return kAbsent;
+    }
 
     writer.asset.meshes.emplace_back(std::move(mesh));
     return writer.asset.meshes.size() - 1;
+}
+
+fastgltf::Wrap as_wrap(scene::Wrap source) {
+    switch (source) {
+        case scene::Wrap::ClampToEdge:
+            return fastgltf::Wrap::ClampToEdge;
+        case scene::Wrap::MirroredRepeat:
+            return fastgltf::Wrap::MirroredRepeat;
+        case scene::Wrap::Repeat:
+            break;
+    }
+    return fastgltf::Wrap::Repeat;
+}
+
+fastgltf::MimeType as_mime(const std::string& mime_type) {
+    return mime_type == "image/jpeg" ? fastgltf::MimeType::JPEG : fastgltf::MimeType::PNG;
+}
+
+// Writes the materials and the pictures they use, and reports where each
+// material landed so that a primitive can point at it.
+//
+// Images go out as the very bytes they came in as. Keeping them encoded all the
+// way through is what makes that possible, and it means a PNG survives the trip
+// untouched and the engine needs no image encoder at all.
+std::vector<std::size_t> add_materials(Writer& writer, const scene::Scene& scene) {
+    std::unordered_map<std::uint32_t, std::size_t> images;
+
+    const auto image_index = [&](scene::ImageId id) {
+        if (const auto found = images.find(id.index); found != images.end()) {
+            return found->second;
+        }
+
+        const scene::Image* source = scene.image(id);
+        if (source == nullptr || source->empty()) {
+            return kAbsent;
+        }
+
+        fastgltf::Image image;
+        image.name = source->name.c_str();
+        image.data = fastgltf::sources::BufferView{
+            writer.add_view(source->bytes.data(), source->bytes.size(), {}),
+            as_mime(source->mime_type)};
+
+        writer.asset.images.emplace_back(std::move(image));
+
+        const std::size_t index = writer.asset.images.size() - 1;
+        images.emplace(id.index, index);
+        return index;
+    };
+
+    // Textures are written per use rather than shared. A material naming the
+    // same picture twice writes two of them, which is a handful of bytes of
+    // JSON and saves keeping a table keyed by the pair of image and sampler.
+    const auto texture_index = [&](const scene::Texture& texture) {
+        if (!texture.valid()) {
+            return kAbsent;
+        }
+
+        const std::size_t image = image_index(texture.image);
+        if (image == kAbsent) {
+            return kAbsent;
+        }
+
+        fastgltf::Sampler sampler;
+        sampler.wrapS = as_wrap(texture.wrap_s);
+        sampler.wrapT = as_wrap(texture.wrap_t);
+        sampler.minFilter = fastgltf::Filter::LinearMipMapLinear;
+        sampler.magFilter = fastgltf::Filter::Linear;
+        writer.asset.samplers.emplace_back(std::move(sampler));
+
+        fastgltf::Texture out;
+        out.imageIndex = image;
+        out.samplerIndex = writer.asset.samplers.size() - 1;
+        writer.asset.textures.emplace_back(std::move(out));
+
+        return writer.asset.textures.size() - 1;
+    };
+
+    const auto texture_info = [&](const scene::Texture& texture) {
+        fastgltf::Optional<fastgltf::TextureInfo> info;
+        if (const std::size_t index = texture_index(texture); index != kAbsent) {
+            fastgltf::TextureInfo used;
+            used.textureIndex = index;
+            info = std::move(used);
+        }
+        return info;
+    };
+
+    std::vector<std::size_t> written;
+    written.reserve(scene.material_count());
+
+    for (const scene::MaterialId id : scene.materials()) {
+        const scene::Material* source = scene.material(id);
+        if (source == nullptr) {
+            written.push_back(kAbsent);
+            continue;
+        }
+
+        fastgltf::Material material;
+        material.name = source->name.c_str();
+        material.doubleSided = source->double_sided;
+        material.alphaCutoff = source->alpha_cutoff;
+
+        switch (source->alpha_mode) {
+            case scene::AlphaMode::Mask:
+                material.alphaMode = fastgltf::AlphaMode::Mask;
+                break;
+            case scene::AlphaMode::Blend:
+                material.alphaMode = fastgltf::AlphaMode::Blend;
+                break;
+            case scene::AlphaMode::Opaque:
+                break;
+        }
+
+        material.pbrData.baseColorFactor =
+            fastgltf::math::nvec4(source->base_colour.x, source->base_colour.y,
+                                  source->base_colour.z, source->base_colour.w);
+        material.pbrData.metallicFactor = source->metallic;
+        material.pbrData.roughnessFactor = source->roughness;
+        material.emissiveFactor =
+            fastgltf::math::nvec3(source->emissive.x, source->emissive.y, source->emissive.z);
+
+        material.pbrData.baseColorTexture = texture_info(source->base_colour_texture);
+        material.pbrData.metallicRoughnessTexture =
+            texture_info(source->metallic_roughness_texture);
+
+        if (const std::size_t index = texture_index(source->normal_texture); index != kAbsent) {
+            fastgltf::NormalTextureInfo normal;
+            normal.textureIndex = index;
+            normal.scale = source->normal_scale;
+            material.normalTexture = std::move(normal);
+        }
+
+        if (const std::size_t index = texture_index(source->occlusion_texture); index != kAbsent) {
+            fastgltf::OcclusionTextureInfo occlusion;
+            occlusion.textureIndex = index;
+            occlusion.strength = source->occlusion_strength;
+            material.occlusionTexture = std::move(occlusion);
+        }
+
+        material.emissiveTexture = texture_info(source->emissive_texture);
+
+        writer.asset.materials.emplace_back(std::move(material));
+        written.push_back(writer.asset.materials.size() - 1);
+    }
+
+    return written;
 }
 
 fastgltf::AnimationInterpolation as_interpolation(anim::Interpolation source) {
@@ -408,6 +602,9 @@ bool export_gltf(const std::filesystem::path& path, const scene::Scene& scene,
     info.generator = "kinetiqra";
     writer.asset.assetInfo = std::move(info);
 
+    // Before the meshes, since a primitive names the material it is painted by.
+    const std::vector<std::size_t> materials = add_materials(writer, scene);
+
     IndexMap meshes;
     for (const scene::MeshId id : scene.meshes()) {
         const geom::EditMesh* mesh = scene.mesh(id);
@@ -415,7 +612,8 @@ bool export_gltf(const std::filesystem::path& path, const scene::Scene& scene,
             continue;
         }
 
-        const std::size_t index = add_mesh(writer, *mesh, "mesh" + std::to_string(id.index));
+        const std::size_t index =
+            add_mesh(writer, *mesh, "mesh" + std::to_string(id.index), materials);
         if (index != kAbsent) {
             meshes.emplace(id.index, index);
         }

@@ -1,6 +1,7 @@
 #include <kinetiqra/geom/Bake.hpp>
 
 #include <cstring>
+#include <map>
 #include <unordered_map>
 
 namespace kinetiqra::geom {
@@ -19,6 +20,7 @@ struct Key {
     math::Vec3 position;
     math::Vec3 normal;
     math::Vec2 uv;
+    math::Vec4 tangent;
     math::Vec4 joints;
     math::Vec4 weights;
 
@@ -47,6 +49,7 @@ BakedMesh bake(const EditMesh& mesh) {
 
     const auto* normals = mesh.attributes().find<math::Vec3>(kNormal, Domain::Corner);
     const auto* uvs = mesh.attributes().find<math::Vec2>(kUv, Domain::Corner);
+    const auto* tangents = mesh.attributes().find<math::Vec4>(kTangent, Domain::Corner);
     const auto* joints = mesh.attributes().find<math::Vec4>(kJoints, Domain::Vertex);
     const auto* weights = mesh.attributes().find<math::Vec4>(kWeights, Domain::Vertex);
 
@@ -63,6 +66,9 @@ BakedMesh bake(const EditMesh& mesh) {
         if (uvs != nullptr && corner.index < uvs->size()) {
             key.uv = (*uvs)[corner.index];
         }
+        if (tangents != nullptr && corner.index < tangents->size()) {
+            key.tangent = (*tangents)[corner.index];
+        }
         if (joints != nullptr && vertex.index < joints->size()) {
             key.joints = (*joints)[vertex.index];
         }
@@ -78,7 +84,8 @@ BakedMesh bake(const EditMesh& mesh) {
 
         baked.vertices.insert(baked.vertices.end(),
                               {key.position.x, key.position.y, key.position.z, key.normal.x,
-                               key.normal.y, key.normal.z, key.uv.x, key.uv.y});
+                               key.normal.y, key.normal.z, key.uv.x, key.uv.y, key.tangent.x,
+                               key.tangent.y, key.tangent.z, key.tangent.w});
 
         if (baked.skinned) {
             baked.vertices.insert(baked.vertices.end(),
@@ -90,21 +97,38 @@ BakedMesh bake(const EditMesh& mesh) {
         return index;
     };
 
+    // Grouped by material so that each one owns an unbroken run of indices.
+    // Sorted rather than left in slot order, because a section is a range and a
+    // range cannot have holes in it.
+    std::map<std::uint32_t, std::vector<FaceId>> by_material;
     for (const FaceId face : mesh.faces()) {
-        const std::vector<CornerId>* corners = mesh.face_corners(face);
-        if (corners == nullptr || corners->size() < 3) {
-            continue;
+        by_material[mesh.material(face)].push_back(face);
+    }
+
+    for (const auto& [material, faces] : by_material) {
+        const std::size_t started_at = baked.indices.size();
+
+        for (const FaceId face : faces) {
+            const std::vector<CornerId>* corners = mesh.face_corners(face);
+            if (corners == nullptr || corners->size() < 3) {
+                continue;
+            }
+
+            const std::uint32_t first = emit((*corners)[0]);
+            std::uint32_t previous = emit((*corners)[1]);
+
+            for (std::size_t i = 2; i < corners->size(); ++i) {
+                const std::uint32_t current = emit((*corners)[i]);
+                baked.indices.push_back(first);
+                baked.indices.push_back(previous);
+                baked.indices.push_back(current);
+                previous = current;
+            }
         }
 
-        const std::uint32_t first = emit((*corners)[0]);
-        std::uint32_t previous = emit((*corners)[1]);
-
-        for (std::size_t i = 2; i < corners->size(); ++i) {
-            const std::uint32_t current = emit((*corners)[i]);
-            baked.indices.push_back(first);
-            baked.indices.push_back(previous);
-            baked.indices.push_back(current);
-            previous = current;
+        if (baked.indices.size() > started_at) {
+            baked.sections.push_back(
+                Section{material, started_at, baked.indices.size() - started_at});
         }
     }
 

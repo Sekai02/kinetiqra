@@ -4,6 +4,7 @@
 #include <kinetiqra/geom/Bake.hpp>
 #include <kinetiqra/geom/Extrude.hpp>
 #include <kinetiqra/geom/Primitives.hpp>
+#include <kinetiqra/io/Image.hpp>
 #include <kinetiqra/io/gltf/GltfExport.hpp>
 #include <kinetiqra/io/gltf/GltfImport.hpp>
 #include <kinetiqra/scene/Raycast.hpp>
@@ -25,6 +26,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <memory>
+#include <unordered_set>
 
 namespace kinetiqra::app {
 
@@ -191,6 +193,7 @@ void Application::load_default_scene() {
     selection_ = Selection{};
     selection_.set_node(node);
     suggest_export_path("box");
+    rebuild_textures();
     rebuild_render_meshes();
 }
 
@@ -217,6 +220,7 @@ void Application::load_scene(const std::filesystem::path& path) {
     suggest_export_path(path.stem().string());
     selection_ = Selection{};
     selection_.set_node(scene_.roots().empty() ? scene::NodeId{} : scene_.roots().front());
+    rebuild_textures();
     rebuild_render_meshes();
 
     clip_index_ = 0;
@@ -242,6 +246,102 @@ void Application::rebuild_render_meshes() {
         }
         render_meshes_[id.index].upload(geom::bake(*mesh));
     }
+}
+
+void Application::rebuild_textures() {
+    textures_.clear();
+
+    // Base colour and emissive are pictures, stored bent by a curve that has to
+    // be undone before any lighting maths. A normal map or a roughness map is
+    // not a picture: its numbers are directions and measurements, and
+    // straightening them would corrupt every one of them.
+    std::unordered_set<std::uint32_t> as_colour;
+    for (const scene::MaterialId material_id : scene_.materials()) {
+        const scene::Material* material = scene_.material(material_id);
+        if (material == nullptr) {
+            continue;
+        }
+
+        for (const scene::Texture* texture :
+             {&material->base_colour_texture, &material->emissive_texture}) {
+            if (texture->valid()) {
+                as_colour.insert(texture->image.index);
+            }
+        }
+    }
+
+    for (const scene::ImageId id : scene_.images()) {
+        const scene::Image* image = scene_.image(id);
+        if (image == nullptr || image->empty()) {
+            continue;
+        }
+
+        std::string error;
+        const io::DecodedImage decoded = io::decode_image(image->bytes, error);
+        if (!decoded.valid()) {
+            // A picture that will not decode is not worth refusing the model
+            // over. The material draws with white where it would have gone, and
+            // the reason is said out loud rather than swallowed.
+            std::fprintf(stderr, "kinetiqra: %s\n", error.c_str());
+            continue;
+        }
+
+        // Whether an image holds colours or measurements is decided by the
+        // material using it, not by the image, so the answer is worked out
+        // first and looked up here.
+        const bool colour = as_colour.count(id.index) != 0;
+
+        textures_[id.index].upload(
+            decoded.pixels.data(), decoded.width, decoded.height,
+            colour ? render::ColourSpace::Srgb : render::ColourSpace::Linear);
+    }
+}
+
+render::MaterialDraw Application::material_for(std::uint32_t index) const {
+    render::MaterialDraw draw;
+
+    const scene::Material* material = scene_.material(scene_.material_at(index));
+    if (material == nullptr) {
+        // A mesh that names no material, which is every mesh in a file that has
+        // none. White, lit, and not a special case anywhere else.
+        return draw;
+    }
+
+    draw.base_colour = material->base_colour;
+    draw.metallic = material->metallic;
+    draw.roughness = material->roughness;
+    draw.emissive = material->emissive;
+    draw.normal_scale = material->normal_scale;
+    draw.occlusion_strength = material->occlusion_strength;
+    draw.alpha_cutoff = material->alpha_cutoff;
+    draw.double_sided = material->double_sided;
+
+    switch (material->alpha_mode) {
+        case scene::AlphaMode::Mask:
+            draw.alpha_mode = 1;
+            break;
+        case scene::AlphaMode::Blend:
+            draw.alpha_mode = 2;
+            break;
+        case scene::AlphaMode::Opaque:
+            break;
+    }
+
+    const auto map = [this](const scene::Texture& texture) -> const render::Texture* {
+        if (!texture.valid()) {
+            return nullptr;
+        }
+        const auto found = textures_.find(texture.image.index);
+        return found != textures_.end() ? &found->second : nullptr;
+    };
+
+    draw.base_colour_map = map(material->base_colour_texture);
+    draw.metallic_roughness_map = map(material->metallic_roughness_texture);
+    draw.normal_map = map(material->normal_texture);
+    draw.occlusion_map = map(material->occlusion_texture);
+    draw.emissive_map = map(material->emissive_texture);
+
+    return draw;
 }
 
 void Application::rebuild_render_mesh(scene::MeshId mesh) {
@@ -801,15 +901,29 @@ void Application::draw_frame() {
 
             const scene::Pose* pose = active_pose();
 
-            if (node->skin.valid() && found->second.skinned()) {
-                // No model matrix: the joints already place the mesh, and glTF
-                // says the transform of the node carrying a skinned mesh is
-                // ignored.
-                renderer_.draw_skinned_mesh(found->second, scene_.joint_matrices(node->skin, pose),
-                                            view_projection, camera.position());
-            } else {
-                renderer_.draw_mesh(found->second, scene_.world_transform(id, pose),
-                                    view_projection, camera.position());
+            // Once per material rather than once per mesh. The indices of each
+            // one are a contiguous run, so this is several calls into a single
+            // buffer rather than several buffers.
+            //
+            // The runs come from what was uploaded rather than from baking the
+            // mesh again. Baking here would be work proportional to the model
+            // on every frame, to learn something that has not changed since the
+            // upload.
+            for (const geom::Section& section : found->second.sections()) {
+                const render::MaterialDraw material = material_for(section.material);
+
+                if (node->skin.valid() && found->second.skinned()) {
+                    // No model matrix: the joints already place the mesh, and
+                    // glTF says the transform of the node carrying a skinned
+                    // mesh is ignored.
+                    renderer_.draw_skinned_mesh(
+                        found->second, scene_.joint_matrices(node->skin, pose), view_projection,
+                        camera.position(), material, section.first_index, section.index_count);
+                } else {
+                    renderer_.draw_mesh(found->second, scene_.world_transform(id, pose),
+                                        view_projection, camera.position(), material,
+                                        section.first_index, section.index_count);
+                }
             }
         }
 
@@ -1273,7 +1387,12 @@ void Application::shutdown() {
     // needs a current context. They are members, so without this they would be
     // destroyed after this function returns, with nothing left to delete them
     // against.
+    //
+    // Every cache of device objects belongs in this list. Forgetting one is a
+    // crash on exit and nowhere else, which is why it goes unnoticed until
+    // somebody closes the window properly.
     render_meshes_.clear();
+    textures_.clear();
 
     renderer_.shutdown();
 
