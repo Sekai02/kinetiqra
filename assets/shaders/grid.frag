@@ -1,5 +1,10 @@
 #version 450 core
 
+// This writes display colours directly, with no tone mapping and no encode.
+// That is deliberate: the grid and the selection are interface drawn into the
+// world, not surfaces being lit, so there is no linear light here to convert
+// back from. Correcting them to match the mesh shader would wash them out.
+
 // An infinite ground plane, drawn by intersecting each pixel's view ray with
 // Y = 0 rather than by storing any geometry. That is what lets it reach the
 // horizon: there is no mesh to run out of.

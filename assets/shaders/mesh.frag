@@ -34,9 +34,17 @@ layout(binding = 2) uniform sampler2D u_normal_map;
 layout(binding = 3) uniform sampler2D u_occlusion_map;
 layout(binding = 4) uniform sampler2D u_emissive_map;
 
+// The world around the model: what it receives from every direction, and what
+// it reflects at each roughness. These replace the constant ambient term that
+// used to be added everywhere, which said the light was the same from all sides
+// and made everything look flat and pasted on.
+layout(binding = 5) uniform samplerCube u_irradiance;
+layout(binding = 6) uniform samplerCube u_reflection;
+
+uniform float u_reflection_levels;
+
 const vec3 kLightDirection = normalize(vec3(-0.4, -1.0, -0.6));
 const vec3 kLightColour = vec3(1.0);
-const vec3 kAmbient = vec3(0.20, 0.21, 0.24);
 const float kPi = 3.14159265359;
 
 // How much of the surface is turned towards the halfway direction. The sharp
@@ -59,6 +67,57 @@ float occlusion(float cosine, float roughness) {
 
 vec3 fresnel(float cosine, vec3 reflectance) {
     return reflectance + ((1.0 - reflectance) * pow(clamp(1.0 - cosine, 0.0, 1.0), 5.0));
+}
+
+// The filmic curve from ACES, in the fitted form that is five multiplications
+// rather than a matrix and a spline.
+//
+// Lighting produces values that run past one wherever something is bright, and
+// a display cannot show those. Clipping them turns every highlight into a flat
+// white patch; this rolls them off instead, which is what makes a bright scene
+// read as bright rather than as burnt.
+vec3 tone_map(vec3 colour) {
+    const float a = 2.51;
+    const float b = 0.03;
+    const float c = 2.43;
+    const float d = 0.59;
+    const float e = 0.14;
+    return clamp((colour * ((a * colour) + b)) / ((colour * ((c * colour) + d)) + e), 0.0, 1.0);
+}
+
+// Linear light to what a display expects.
+//
+// Textures are straightened on the way in and every calculation above happens
+// in linear light, which is the only space in which adding two lights together
+// means anything. The screen does not work that way, so the result has to be
+// bent back at the very end. Without this the whole image is shown darker than
+// it is, which is not a subtle effect.
+vec3 to_display(vec3 colour) {
+    bvec3 small = lessThanEqual(colour, vec3(0.0031308));
+    vec3 low = colour * 12.92;
+    vec3 high = (1.055 * pow(colour, vec3(1.0 / 2.4))) - 0.055;
+    return mix(high, low, vec3(small));
+}
+
+// Fresnel again, but for a whole environment rather than one direction. A rough
+// surface averages over so many directions that the sharp rise at a grazing
+// angle is worn down, and using the sharp one here makes rough metal glow at
+// its edges.
+vec3 fresnel_rough(float cosine, vec3 reflectance, float roughness) {
+    vec3 ceiling = max(vec3(1.0 - roughness), reflectance);
+    return reflectance + ((ceiling - reflectance) * pow(clamp(1.0 - cosine, 0.0, 1.0), 5.0));
+}
+
+// How much of a reflection survives, as a scale and an offset on the surface's
+// reflectance. Karis' fit to the integral that is usually baked into a texture.
+vec2 environment_brdf(float cosine, float roughness) {
+    const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
+    const vec4 c1 = vec4(1.0, 0.0425, 1.04, -0.04);
+
+    vec4 r = (roughness * c0) + c1;
+    float a004 = (min(r.x * r.x, exp2(-9.28 * cosine)) * r.x) + r.y;
+
+    return (vec2(-1.04, 1.04) * a004) + r.zw;
 }
 
 vec3 surface_normal() {
@@ -123,10 +182,33 @@ void main() {
 
     vec3 lit = (diffuse + specular) * kLightColour * normal_dot_light;
 
+    // What the surroundings contribute. This is the whole point of an
+    // environment: a metal shows almost nothing of its own colour, so without
+    // this a metal is black however bright the scene is.
+    vec3 from_environment = fresnel_rough(normal_dot_view, reflectance, roughness);
+
+    vec3 scattered = texture(u_irradiance, normal).rgb * base.rgb;
+    scattered *= (1.0 - from_environment) * (1.0 - metallic);
+
+    // Rougher surfaces read from a blurrier level of the same map, which is
+    // what the levels were prefiltered for.
+    vec3 mirrored = reflect(-view, normal);
+    vec3 reflected = textureLod(u_reflection, mirrored,
+                                roughness * (u_reflection_levels - 1.0)).rgb;
+
+    // The split sum approximation, in the fitted form that needs no lookup
+    // table. Close enough that the difference does not show under one light,
+    // and it saves a texture and a pass to build it.
+    vec2 fit = environment_brdf(normal_dot_view, roughness);
+    reflected *= (reflectance * fit.x) + fit.y;
+
     float shadowed = texture(u_occlusion_map, v_uv).r;
-    vec3 ambient = kAmbient * base.rgb * mix(1.0, shadowed, u_occlusion_strength);
+    vec3 ambient =
+        (scattered + reflected) * mix(1.0, shadowed, u_occlusion_strength);
 
     vec3 emitted = u_emissive * texture(u_emissive_map, v_uv).rgb;
 
-    o_colour = vec4(lit + ambient + emitted, u_alpha_mode == 2 ? base.a : 1.0);
+    vec3 colour = to_display(tone_map(lit + ambient + emitted));
+
+    o_colour = vec4(colour, u_alpha_mode == 2 ? base.a : 1.0);
 }
