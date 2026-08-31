@@ -8,6 +8,11 @@ namespace kinetiqra::render {
 
 namespace {
 
+// After the five a material can carry, which the fragment shader declares
+// bindings for in that order.
+constexpr std::uint32_t kIrradianceUnit = 5;
+constexpr std::uint32_t kReflectionUnit = 6;
+
 const char* as_text(const GLubyte* value) {
     return value != nullptr ? reinterpret_cast<const char*>(value) : "unknown";
 }
@@ -46,6 +51,12 @@ bool Renderer::initialise(GlLoader loader, const std::string& shader_directory,
 
     if (!overlay_shader_.load(shader_directory + "/overlay.vert",
                               shader_directory + "/overlay.frag", error)) {
+        return false;
+    }
+
+    // After the shaders and before anything is drawn: it runs its own passes,
+    // and it needs the context set up but nothing else.
+    if (!environment_.build(shader_directory, error)) {
         return false;
     }
 
@@ -123,6 +134,11 @@ void Renderer::bind_material(const Shader& shader, const MaterialDraw& material)
         const Texture* map = maps[unit];
         (map != nullptr && map->valid() ? *map : white_).bind(unit);
     }
+
+    // After the material's five, and the same for every surface: the world does
+    // not change from one draw to the next.
+    environment_.bind(kIrradianceUnit, kReflectionUnit);
+    shader.set_uniform("u_reflection_levels", environment_.reflection_levels());
 }
 
 void Renderer::draw_mesh(const RenderMesh& mesh, const math::Mat4& model,
@@ -261,6 +277,7 @@ void Renderer::shutdown() {
     skinned_shader_ = Shader{};
     overlay_shader_ = Shader{};
     white_.destroy();
+    environment_.destroy();
     initialised_ = false;
 }
 

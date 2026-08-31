@@ -1,6 +1,7 @@
 #pragma once
 
 #include <kinetiqra/math/Types.hpp>
+#include <kinetiqra/render/Environment.hpp>
 #include <kinetiqra/render/RenderMesh.hpp>
 #include <kinetiqra/render/Shader.hpp>
 #include <kinetiqra/render/Texture.hpp>
@@ -116,6 +117,9 @@ private:
     Shader mesh_shader_;
     Shader skinned_shader_;
     Shader overlay_shader_;
+
+    // What the metals reflect. Built once, since the sky does not change.
+    Environment environment_;
 
     // One white pixel, bound wherever a material has no texture. Multiplying by
     // white is the same as not having one, which keeps the shader free of
