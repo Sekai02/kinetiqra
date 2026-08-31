@@ -3,6 +3,7 @@
 #include <kinetiqra/core/Arena.hpp>
 #include <kinetiqra/geom/EditMesh.hpp>
 #include <kinetiqra/math/Types.hpp>
+#include <kinetiqra/scene/Material.hpp>
 
 #include <string>
 #include <vector>
@@ -78,6 +79,9 @@ public:
 
     MeshId add_mesh(geom::EditMesh mesh);
 
+    ImageId add_image(Image image);
+    MaterialId add_material(Material material);
+
     // Returns an invalid handle if the joint and matrix counts disagree, which
     // is a broken skin rather than something to deform badly with.
     SkinId add_skin(Skin skin);
@@ -94,6 +98,22 @@ public:
     [[nodiscard]] const geom::EditMesh* mesh(MeshId id) const { return meshes_.get(id); }
 
     [[nodiscard]] const Skin* skin(SkinId id) const { return skins_.get(id); }
+
+    [[nodiscard]] const Image* image(ImageId id) const { return images_.get(id); }
+
+    [[nodiscard]] const Material* material(MaterialId id) const { return materials_.get(id); }
+
+    [[nodiscard]] Material* material(MaterialId id) { return materials_.get(id); }
+
+    // Materials and images are named by index rather than by handle in the face
+    // channel that assigns them, because `geom` must not learn what a scene is.
+    // These turn one into the other, in the order they were added.
+    [[nodiscard]] MaterialId material_at(std::size_t index) const;
+    [[nodiscard]] std::vector<MaterialId> materials() const;
+    [[nodiscard]] std::vector<ImageId> images() const;
+
+    [[nodiscard]] std::size_t index_of(MaterialId id) const;
+    [[nodiscard]] std::size_t index_of(ImageId id) const;
 
     // One matrix per joint, ready for the vertex shader: where the joint stands
     // now, composed with where it stood when the mesh was bound.
@@ -140,12 +160,18 @@ public:
 
     [[nodiscard]] std::size_t mesh_count() const { return meshes_.size(); }
 
+    [[nodiscard]] std::size_t material_count() const { return materials_.size(); }
+
+    [[nodiscard]] std::size_t image_count() const { return images_.size(); }
+
     void clear();
 
 private:
     core::Arena<Node, tags::Node> nodes_;
     core::Arena<geom::EditMesh, tags::Mesh> meshes_;
     core::Arena<Skin, tags::Skin> skins_;
+    core::Arena<Image, tags::Image> images_;
+    core::Arena<Material, tags::Material> materials_;
     std::vector<NodeId> roots_;
 };
 

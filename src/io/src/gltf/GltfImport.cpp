@@ -1,3 +1,4 @@
+#include <kinetiqra/geom/Tangents.hpp>
 #include <kinetiqra/io/gltf/GltfImport.hpp>
 
 #include <fastgltf/core.hpp>
@@ -50,9 +51,15 @@ struct PrimitiveData {
     std::vector<math::Vec3> positions;
     std::vector<math::Vec3> normals;
     std::vector<math::Vec2> uvs;
+    std::vector<math::Vec4> tangents;
     std::vector<math::Vec4> joints;
     std::vector<math::Vec4> weights;
     std::vector<std::uint32_t> indices;
+
+    // Which of the file's materials paints this primitive. Every primitive of a
+    // mesh melts into one EditMesh, so this is what has to survive as a face
+    // attribute or the distinction is lost.
+    std::uint32_t material{0};
 
     [[nodiscard]] bool skinned() const { return !joints.empty() && !weights.empty(); }
 };
@@ -80,12 +87,27 @@ bool read_primitive(const fastgltf::Asset& asset, const fastgltf::Primitive& pri
             [&](math::Vec3 value, std::size_t index) { out.normals[index] = value; });
     }
 
+    // Only TEXCOORD_0. A model can carry several sets, and the juggernaut
+    // carries three, but a material asking for the second or third gets the
+    // first until there is a reason to keep them all.
     if (const auto* uvs = primitive.findAttribute("TEXCOORD_0");
         uvs != primitive.attributes.end()) {
         const auto& accessor = asset.accessors[uvs->accessorIndex];
         out.uvs.resize(accessor.count);
         fastgltf::iterateAccessorWithIndex<math::Vec2>(
             asset, accessor, [&](math::Vec2 value, std::size_t index) { out.uvs[index] = value; });
+    }
+
+    // Read when the file has it and computed later when it does not, which is
+    // the common case: the tangent is only needed by a normal map and plenty of
+    // exporters leave it out.
+    if (const auto* tangents = primitive.findAttribute("TANGENT");
+        tangents != primitive.attributes.end()) {
+        const auto& accessor = asset.accessors[tangents->accessorIndex];
+        out.tangents.resize(accessor.count);
+        fastgltf::iterateAccessorWithIndex<math::Vec4>(
+            asset, accessor,
+            [&](math::Vec4 value, std::size_t index) { out.tangents[index] = value; });
     }
 
     // Joint indices arrive as bytes or shorts depending on how many joints the
@@ -176,7 +198,6 @@ void append_primitive(const PrimitiveData& data, geom::EditMesh& mesh,
         std::vector<geom::CornerId> corners;
         const geom::FaceId face =
             mesh.add_face({vertex_for(a), vertex_for(b), vertex_for(c)}, &corners);
-        (void)face;
 
         // A primitive without normals gets flat ones, computed per triangle,
         // which is what the specification asks for.
@@ -190,6 +211,8 @@ void append_primitive(const PrimitiveData& data, geom::EditMesh& mesh,
             }
         }
 
+        mesh.set_material(face, data.material);
+
         const std::array<std::uint32_t, 3> source{a, b, c};
         for (std::size_t corner = 0; corner < corners.size(); ++corner) {
             const std::uint32_t index = source[corner];
@@ -199,8 +222,198 @@ void append_primitive(const PrimitiveData& data, geom::EditMesh& mesh,
             if (!data.uvs.empty()) {
                 mesh.set_uv(corners[corner], data.uvs[index]);
             }
+            if (!data.tangents.empty()) {
+                mesh.set_tangent(corners[corner], data.tangents[index]);
+            }
         }
     }
+}
+
+scene::Wrap as_wrap(fastgltf::Wrap source) {
+    switch (source) {
+        case fastgltf::Wrap::ClampToEdge:
+            return scene::Wrap::ClampToEdge;
+        case fastgltf::Wrap::MirroredRepeat:
+            return scene::Wrap::MirroredRepeat;
+        case fastgltf::Wrap::Repeat:
+            break;
+    }
+    return scene::Wrap::Repeat;
+}
+
+// The bytes of an image, wherever the file happens to keep them.
+//
+// Three shapes, and a model in the wild will use any of them: inside a buffer
+// view, which is what a self-contained .glb does; already loaded, which is what
+// fastgltf hands back for a data URI or for an external file it was asked to
+// read; and a path it has not been asked to read, which is why the parser is
+// given LoadExternalImages.
+std::vector<std::uint8_t> image_bytes(const fastgltf::Asset& asset, const fastgltf::Image& image) {
+    if (const auto* view = std::get_if<fastgltf::sources::BufferView>(&image.data);
+        view != nullptr) {
+        const fastgltf::BufferView& buffer_view = asset.bufferViews[view->bufferViewIndex];
+        const fastgltf::Buffer& buffer = asset.buffers[buffer_view.bufferIndex];
+
+        const auto copy = [&](const std::byte* bytes) {
+            const std::byte* start = bytes + buffer_view.byteOffset;
+            return std::vector<std::uint8_t>(
+                reinterpret_cast<const std::uint8_t*>(start),
+                reinterpret_cast<const std::uint8_t*>(start + buffer_view.byteLength));
+        };
+
+        if (const auto* array = std::get_if<fastgltf::sources::Array>(&buffer.data);
+            array != nullptr) {
+            return copy(array->bytes.data());
+        }
+        if (const auto* vector = std::get_if<fastgltf::sources::Vector>(&buffer.data);
+            vector != nullptr) {
+            return copy(vector->bytes.data());
+        }
+        if (const auto* bytes = std::get_if<fastgltf::sources::ByteView>(&buffer.data);
+            bytes != nullptr) {
+            return copy(bytes->bytes.data());
+        }
+        return {};
+    }
+
+    if (const auto* array = std::get_if<fastgltf::sources::Array>(&image.data); array != nullptr) {
+        return std::vector<std::uint8_t>(
+            reinterpret_cast<const std::uint8_t*>(array->bytes.data()),
+            reinterpret_cast<const std::uint8_t*>(array->bytes.data() + array->bytes.size()));
+    }
+
+    if (const auto* vector = std::get_if<fastgltf::sources::Vector>(&image.data);
+        vector != nullptr) {
+        return std::vector<std::uint8_t>(
+            reinterpret_cast<const std::uint8_t*>(vector->bytes.data()),
+            reinterpret_cast<const std::uint8_t*>(vector->bytes.data() + vector->bytes.size()));
+    }
+
+    return {};
+}
+
+std::string mime_type_of(const fastgltf::Asset& asset, const fastgltf::Image& image) {
+    fastgltf::MimeType mime = fastgltf::MimeType::None;
+
+    if (const auto* view = std::get_if<fastgltf::sources::BufferView>(&image.data);
+        view != nullptr) {
+        mime = view->mimeType;
+    } else if (const auto* array = std::get_if<fastgltf::sources::Array>(&image.data);
+               array != nullptr) {
+        mime = array->mimeType;
+    } else if (const auto* uri = std::get_if<fastgltf::sources::URI>(&image.data); uri != nullptr) {
+        mime = uri->mimeType;
+    }
+
+    (void)asset;
+
+    switch (mime) {
+        case fastgltf::MimeType::JPEG:
+            return "image/jpeg";
+        case fastgltf::MimeType::PNG:
+            return "image/png";
+        default:
+            break;
+    }
+
+    // PNG when the file did not say. Every decoder sniffs the header anyway,
+    // and this is only carried so that an export can declare something.
+    return "image/png";
+}
+
+// Turns a glTF texture reference into ours, collapsing the sampler into the two
+// settings that differ between files.
+scene::Texture as_texture(const fastgltf::Asset& asset, const fastgltf::TextureInfo& info,
+                          const std::vector<scene::ImageId>& images) {
+    scene::Texture texture;
+
+    if (info.textureIndex >= asset.textures.size()) {
+        return texture;
+    }
+
+    const fastgltf::Texture& source = asset.textures[info.textureIndex];
+    if (source.imageIndex.has_value() && source.imageIndex.value() < images.size()) {
+        texture.image = images[source.imageIndex.value()];
+    }
+
+    if (source.samplerIndex.has_value() && source.samplerIndex.value() < asset.samplers.size()) {
+        const fastgltf::Sampler& sampler = asset.samplers[source.samplerIndex.value()];
+        texture.wrap_s = as_wrap(sampler.wrapS);
+        texture.wrap_t = as_wrap(sampler.wrapT);
+    }
+
+    return texture;
+}
+
+// Reads the materials and the pictures they use.
+//
+// Images are kept exactly as they arrived rather than decoded, so that an
+// export can write the same bytes back and the engine needs no image encoder.
+std::vector<scene::MaterialId> add_materials(const fastgltf::Asset& asset, scene::Scene& target) {
+    std::vector<scene::ImageId> images;
+    images.reserve(asset.images.size());
+
+    for (const fastgltf::Image& source : asset.images) {
+        scene::Image image;
+        image.name = std::string(source.name);
+        image.mime_type = mime_type_of(asset, source);
+        image.bytes = image_bytes(asset, source);
+
+        images.push_back(target.add_image(std::move(image)));
+    }
+
+    std::vector<scene::MaterialId> materials;
+    materials.reserve(asset.materials.size());
+
+    for (const fastgltf::Material& source : asset.materials) {
+        scene::Material material;
+        material.name = std::string(source.name);
+
+        const fastgltf::PBRData& pbr = source.pbrData;
+        material.base_colour = math::Vec4{pbr.baseColorFactor[0], pbr.baseColorFactor[1],
+                                          pbr.baseColorFactor[2], pbr.baseColorFactor[3]};
+        material.metallic = pbr.metallicFactor;
+        material.roughness = pbr.roughnessFactor;
+        material.emissive = math::Vec3{source.emissiveFactor[0], source.emissiveFactor[1],
+                                       source.emissiveFactor[2]};
+
+        material.double_sided = source.doubleSided;
+        material.alpha_cutoff = source.alphaCutoff;
+
+        switch (source.alphaMode) {
+            case fastgltf::AlphaMode::Mask:
+                material.alpha_mode = scene::AlphaMode::Mask;
+                break;
+            case fastgltf::AlphaMode::Blend:
+                material.alpha_mode = scene::AlphaMode::Blend;
+                break;
+            case fastgltf::AlphaMode::Opaque:
+                break;
+        }
+
+        if (pbr.baseColorTexture.has_value()) {
+            material.base_colour_texture = as_texture(asset, pbr.baseColorTexture.value(), images);
+        }
+        if (pbr.metallicRoughnessTexture.has_value()) {
+            material.metallic_roughness_texture =
+                as_texture(asset, pbr.metallicRoughnessTexture.value(), images);
+        }
+        if (source.normalTexture.has_value()) {
+            material.normal_texture = as_texture(asset, source.normalTexture.value(), images);
+            material.normal_scale = source.normalTexture.value().scale;
+        }
+        if (source.occlusionTexture.has_value()) {
+            material.occlusion_texture = as_texture(asset, source.occlusionTexture.value(), images);
+            material.occlusion_strength = source.occlusionTexture.value().strength;
+        }
+        if (source.emissiveTexture.has_value()) {
+            material.emissive_texture = as_texture(asset, source.emissiveTexture.value(), images);
+        }
+
+        materials.push_back(target.add_material(std::move(material)));
+    }
+
+    return materials;
 }
 
 scene::NodeId add_node(const fastgltf::Asset& asset, std::size_t node_index, scene::Scene& target,
@@ -410,9 +623,9 @@ bool import_gltf(const std::filesystem::path& path, scene::Scene& target, std::s
     // DecomposeNodeMatrices keeps transforms as TRS, which is what the scene
     // stores and what animation will need. GenerateMeshIndices covers the
     // primitives that arrive without an index buffer.
-    constexpr auto kOptions = fastgltf::Options::LoadExternalBuffers |
-                              fastgltf::Options::DecomposeNodeMatrices |
-                              fastgltf::Options::GenerateMeshIndices;
+    constexpr auto kOptions =
+        fastgltf::Options::LoadExternalBuffers | fastgltf::Options::LoadExternalImages |
+        fastgltf::Options::DecomposeNodeMatrices | fastgltf::Options::GenerateMeshIndices;
 
     // fastgltf resolves external buffers and images against this directory and
     // rejects an empty one, which is what a bare filename such as "model.glb"
@@ -432,6 +645,10 @@ bool import_gltf(const std::filesystem::path& path, scene::Scene& target, std::s
 
     const fastgltf::Asset& asset = parsed.get();
 
+    // Before the meshes, because a face records its material by index and the
+    // indices are the order these are added in.
+    add_materials(asset, target);
+
     std::vector<scene::MeshId> meshes;
     meshes.reserve(asset.meshes.size());
 
@@ -441,6 +658,8 @@ bool import_gltf(const std::filesystem::path& path, scene::Scene& target, std::s
         // Shared across the primitives of one glTF mesh, so that a model split
         // by material still welds along the seams between those parts.
         std::unordered_map<PositionKey, geom::VertexId, PositionHash> welded;
+
+        bool tangents_needed = false;
 
         for (const fastgltf::Primitive& primitive : source.primitives) {
             if (primitive.type != fastgltf::PrimitiveType::Triangles) {
@@ -455,7 +674,22 @@ bool import_gltf(const std::filesystem::path& path, scene::Scene& target, std::s
                 return false;
             }
 
+            // A primitive without a material takes the first one, which is what
+            // the specification's default amounts to once a file has any.
+            primitive_data.material =
+                primitive.materialIndex.has_value()
+                    ? static_cast<std::uint32_t>(primitive.materialIndex.value())
+                    : 0;
+
             append_primitive(primitive_data, mesh, welded);
+            tangents_needed = tangents_needed || primitive_data.tangents.empty();
+        }
+
+        // Only for the meshes that arrived without them. A file that carries
+        // its own tangents knows better than we can work out, since it may have
+        // been baked against the very normal map it ships with.
+        if (tangents_needed) {
+            geom::compute_tangents(mesh);
         }
 
         meshes.push_back(target.add_mesh(std::move(mesh)));

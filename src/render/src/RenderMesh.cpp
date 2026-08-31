@@ -18,7 +18,8 @@ RenderMesh::~RenderMesh() {
 }
 
 RenderMesh::RenderMesh(RenderMesh&& other) noexcept
-    : vertex_array_(std::exchange(other.vertex_array_, 0)),
+    : sections_(std::exchange(other.sections_, {})),
+      vertex_array_(std::exchange(other.vertex_array_, 0)),
       vertex_buffer_(std::exchange(other.vertex_buffer_, 0)),
       index_buffer_(std::exchange(other.index_buffer_, 0)),
       vertex_count_(std::exchange(other.vertex_count_, 0)),
@@ -34,6 +35,7 @@ RenderMesh& RenderMesh::operator=(RenderMesh&& other) noexcept {
         vertex_array_ = std::exchange(other.vertex_array_, 0);
         vertex_buffer_ = std::exchange(other.vertex_buffer_, 0);
         index_buffer_ = std::exchange(other.index_buffer_, 0);
+        sections_ = std::exchange(other.sections_, {});
         vertex_count_ = std::exchange(other.vertex_count_, 0);
         index_count_ = std::exchange(other.index_count_, 0);
         skinned_ = std::exchange(other.skinned_, false);
@@ -54,6 +56,7 @@ void RenderMesh::destroy() {
         glDeleteVertexArrays(1, &vertex_array_);
         vertex_array_ = 0;
     }
+    sections_.clear();
     vertex_count_ = 0;
     index_count_ = 0;
     skinned_ = false;
@@ -69,6 +72,7 @@ void RenderMesh::upload(const geom::BakedMesh& baked) {
     vertex_count_ = baked.vertex_count();
     index_count_ = baked.indices.size();
     skinned_ = baked.skinned;
+    sections_ = baked.sections;
 
     const auto stride = static_cast<GLsizei>(baked.floats_per_vertex() * sizeof(float));
 
@@ -86,8 +90,8 @@ void RenderMesh::upload(const geom::BakedMesh& baked) {
     glVertexArrayVertexBuffer(vertex_array_, kBindingIndex, vertex_buffer_, 0, stride);
     glVertexArrayElementBuffer(vertex_array_, index_buffer_);
 
-    // position, normal, uv, and for a skinned mesh the four joint indices and
-    // their weights, in the order geom::bake interleaves them.
+    // position, normal, uv, tangent, and for a skinned mesh the four joint
+    // indices and their weights, in the order geom::bake interleaves them.
     struct Attribute {
         GLuint location;
         GLint components;
@@ -98,11 +102,12 @@ void RenderMesh::upload(const geom::BakedMesh& baked) {
         {0, 3, 0},
         {1, 3, 3 * sizeof(float)},
         {2, 2, 6 * sizeof(float)},
+        {3, 4, 8 * sizeof(float)},
     };
 
     if (skinned_) {
-        attributes.push_back({3, 4, 8 * sizeof(float)});
         attributes.push_back({4, 4, 12 * sizeof(float)});
+        attributes.push_back({5, 4, 16 * sizeof(float)});
     }
 
     for (const auto& attribute : attributes) {
@@ -114,12 +119,17 @@ void RenderMesh::upload(const geom::BakedMesh& baked) {
 }
 
 void RenderMesh::draw() const {
-    if (!valid()) {
+    draw(0, index_count_);
+}
+
+void RenderMesh::draw(std::size_t first_index, std::size_t index_count) const {
+    if (!valid() || index_count == 0 || first_index + index_count > index_count_) {
         return;
     }
 
     glBindVertexArray(vertex_array_);
-    glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(index_count_), GL_UNSIGNED_INT, nullptr);
+    glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(index_count), GL_UNSIGNED_INT,
+                   reinterpret_cast<const void*>(first_index * sizeof(std::uint32_t)));
     glBindVertexArray(0);
 }
 

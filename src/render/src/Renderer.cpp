@@ -2,6 +2,8 @@
 
 #include <glad/glad.h>
 
+#include <array>
+
 namespace kinetiqra::render {
 
 namespace {
@@ -65,6 +67,11 @@ bool Renderer::initialise(GlLoader loader, const std::string& shader_directory,
     // is, rather than every point being one pixel.
     glEnable(GL_PROGRAM_POINT_SIZE);
 
+    // Linear, not sRGB: it stands in for a missing texture and gets multiplied
+    // by a factor, so it has to be exactly one.
+    constexpr std::array<std::uint8_t, 4> kWhite{255, 255, 255, 255};
+    white_.upload(kWhite.data(), 1, 1, ColourSpace::Linear);
+
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LEQUAL);
     glEnable(GL_BLEND);
@@ -97,9 +104,31 @@ void Renderer::draw_grid(const math::Mat4& view_projection, const math::Vec3& ca
     glBindVertexArray(0);
 }
 
+void Renderer::bind_material(const Shader& shader, const MaterialDraw& material) const {
+    shader.set_uniform("u_base_colour", material.base_colour);
+    shader.set_uniform("u_metallic", material.metallic);
+    shader.set_uniform("u_roughness", material.roughness);
+    shader.set_uniform("u_emissive", material.emissive);
+    shader.set_uniform("u_normal_scale", material.normal_scale);
+    shader.set_uniform("u_occlusion_strength", material.occlusion_strength);
+    shader.set_uniform("u_alpha_mode", material.alpha_mode);
+    shader.set_uniform("u_alpha_cutoff", material.alpha_cutoff);
+
+    // The order matches the binding points the fragment shader declares.
+    const std::array<const Texture*, 5> maps{material.base_colour_map,
+                                             material.metallic_roughness_map, material.normal_map,
+                                             material.occlusion_map, material.emissive_map};
+
+    for (std::uint32_t unit = 0; unit < maps.size(); ++unit) {
+        const Texture* map = maps[unit];
+        (map != nullptr && map->valid() ? *map : white_).bind(unit);
+    }
+}
+
 void Renderer::draw_mesh(const RenderMesh& mesh, const math::Mat4& model,
-                         const math::Mat4& view_projection,
-                         const math::Vec3& camera_position) const {
+                         const math::Mat4& view_projection, const math::Vec3& camera_position,
+                         const MaterialDraw& material, std::size_t first_index,
+                         std::size_t index_count) const {
     if (!initialised_ || !mesh.valid()) {
         return;
     }
@@ -114,12 +143,14 @@ void Renderer::draw_mesh(const RenderMesh& mesh, const math::Mat4& model,
     mesh_shader_.set_uniform("u_normal_matrix",
                              math::Mat4(glm::transpose(glm::inverse(math::Mat3(model)))));
 
-    mesh.draw();
+    bind_material(mesh_shader_, material);
+    mesh.draw(first_index, index_count);
 }
 
 void Renderer::draw_skinned_mesh(const RenderMesh& mesh, const std::vector<math::Mat4>& joints,
                                  const math::Mat4& view_projection,
-                                 const math::Vec3& camera_position) const {
+                                 const math::Vec3& camera_position, const MaterialDraw& material,
+                                 std::size_t first_index, std::size_t index_count) const {
     if (!initialised_ || !mesh.valid() || joints.empty()) {
         return;
     }
@@ -140,7 +171,8 @@ void Renderer::draw_skinned_mesh(const RenderMesh& mesh, const std::vector<math:
     skinned_shader_.set_uniform("u_view_projection", view_projection);
     skinned_shader_.set_uniform("u_camera_position", camera_position);
 
-    mesh.draw();
+    bind_material(skinned_shader_, material);
+    mesh.draw(first_index, index_count);
 }
 
 void Renderer::upload_overlay(const std::vector<math::Vec3>& points) const {
@@ -228,6 +260,7 @@ void Renderer::shutdown() {
     mesh_shader_ = Shader{};
     skinned_shader_ = Shader{};
     overlay_shader_ = Shader{};
+    white_.destroy();
     initialised_ = false;
 }
 

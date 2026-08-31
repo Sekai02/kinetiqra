@@ -8,6 +8,10 @@ EditMesh::EditMesh() {
     attributes_.add<math::Vec3>(kPosition, Domain::Vertex);
     attributes_.add<math::Vec3>(kNormal, Domain::Corner, math::Vec3{0.0F, 1.0F, 0.0F});
     attributes_.add<math::Vec2>(kUv, Domain::Corner);
+
+    // Along +X until something works it out, so that a mesh drawn before its
+    // tangents are computed has a frame rather than a degenerate one.
+    attributes_.add<math::Vec4>(kTangent, Domain::Corner, math::Vec4{1.0F, 0.0F, 0.0F, 1.0F});
 }
 
 VertexId EditMesh::add_vertex(math::Vec3 position) {
@@ -131,6 +135,36 @@ void EditMesh::set_normal(CornerId id, math::Vec3 value) {
 
 void EditMesh::set_uv(CornerId id, math::Vec2 value) {
     auto* channel = attributes_.find<math::Vec2>(kUv, Domain::Corner);
+    if (channel != nullptr && contains(id) && id.index < channel->size()) {
+        (*channel)[id.index] = value;
+    }
+}
+
+std::uint32_t EditMesh::material(FaceId id) const {
+    const auto* channel = attributes_.find<std::uint32_t>(kMaterial, Domain::Face);
+    if (channel == nullptr || !contains(id) || id.index >= channel->size()) {
+        // No channel means the whole mesh is one material, which is what a file
+        // without materials amounts to.
+        return 0;
+    }
+    return (*channel)[id.index];
+}
+
+void EditMesh::set_material(FaceId id, std::uint32_t material) {
+    if (!contains(id)) {
+        return;
+    }
+
+    // Created on demand, like skinning: a mesh that never mentions a material
+    // does not carry a channel of zeroes for the bake to walk over.
+    auto* channel = attributes_.add<std::uint32_t>(kMaterial, Domain::Face);
+    if (channel != nullptr && id.index < channel->size()) {
+        (*channel)[id.index] = material;
+    }
+}
+
+void EditMesh::set_tangent(CornerId id, math::Vec4 value) {
+    auto* channel = attributes_.find<math::Vec4>(kTangent, Domain::Corner);
     if (channel != nullptr && contains(id) && id.index < channel->size()) {
         (*channel)[id.index] = value;
     }

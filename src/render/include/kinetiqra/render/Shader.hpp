@@ -33,6 +33,7 @@ public:
     void set_uniform(std::string_view name, const math::Vec4& value) const;
     void set_uniform(std::string_view name, const math::Vec3& value) const;
     void set_uniform(std::string_view name, float value) const;
+    void set_uniform(std::string_view name, int value) const;
 
     [[nodiscard]] bool valid() const { return program_ != 0; }
 

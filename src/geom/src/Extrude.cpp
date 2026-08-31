@@ -53,6 +53,7 @@ ExtrudeResult extrude(EditMesh& mesh, const std::vector<FaceId>& faces) {
     // faces invalidates nothing but reading as we go would be harder to follow.
     std::vector<FaceId> selected;
     std::vector<std::vector<CornerId>> loops;
+    std::vector<std::uint32_t> materials;
 
     for (const FaceId face : faces) {
         const std::vector<CornerId>* corners = mesh.face_corners(face);
@@ -61,6 +62,7 @@ ExtrudeResult extrude(EditMesh& mesh, const std::vector<FaceId>& faces) {
         }
         selected.push_back(face);
         loops.push_back(*corners);
+        materials.push_back(mesh.material(face));
     }
 
     if (selected.empty()) {
@@ -123,7 +125,12 @@ ExtrudeResult extrude(EditMesh& mesh, const std::vector<FaceId>& faces) {
         }
 
         std::vector<CornerId> cap_corners;
-        result.caps.push_back(mesh.add_face(cap, &cap_corners));
+        const FaceId cap_face = mesh.add_face(cap, &cap_corners);
+        result.caps.push_back(cap_face);
+
+        // The new surface is painted the way the old one was. Without this an
+        // extrusion would punch an untextured hole in the middle of a model.
+        mesh.set_material(cap_face, materials[index]);
 
         // Carried over rather than recomputed, so a hard edge or a UV island
         // survives being extruded.
@@ -166,7 +173,9 @@ ExtrudeResult extrude(EditMesh& mesh, const std::vector<FaceId>& faces) {
                                                     : std::vector<VertexId>{b, a, top_a, top_b};
 
             std::vector<CornerId> wall_corners;
-            result.walls.push_back(mesh.add_face(wall, &wall_corners));
+            const FaceId wall_face = mesh.add_face(wall, &wall_corners);
+            result.walls.push_back(wall_face);
+            mesh.set_material(wall_face, materials[index]);
 
             const math::Vec3 wall_normal = glm::length(outward) > 0.0F
                                                ? glm::normalize(outward)

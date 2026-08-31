@@ -208,3 +208,34 @@ TEST_CASE("extruding a skinned face carries the skinning onto the new vertices")
         CHECK((*joints)[vertex.index].x == doctest::Approx(2.0F));
     }
 }
+
+TEST_CASE("the new faces are painted the way the old one was") {
+    geom::EditMesh mesh = floor_quad();
+    const geom::FaceId face = mesh.faces().front();
+    mesh.set_material(face, 4);
+
+    const geom::ExtrudeResult result = geom::extrude(mesh, {face});
+
+    // Both the cap and the walls: an extrusion that left either one unpainted
+    // would punch a hole of a different material through the model.
+    for (const geom::FaceId created : result.caps) {
+        CHECK(mesh.material(created) == 4);
+    }
+    for (const geom::FaceId created : result.walls) {
+        CHECK(mesh.material(created) == 4);
+    }
+}
+
+TEST_CASE("two faces of different materials keep theirs apart") {
+    geom::EditMesh mesh = two_quads();
+    const std::vector<geom::FaceId> both = mesh.faces();
+
+    mesh.set_material(both[0], 1);
+    mesh.set_material(both[1], 2);
+
+    const geom::ExtrudeResult result = geom::extrude(mesh, both);
+
+    REQUIRE(result.caps.size() == 2);
+    CHECK(mesh.material(result.caps[0]) == 1);
+    CHECK(mesh.material(result.caps[1]) == 2);
+}

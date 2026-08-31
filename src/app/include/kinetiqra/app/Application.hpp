@@ -8,6 +8,7 @@
 #include <kinetiqra/core/Command.hpp>
 #include <kinetiqra/render/RenderMesh.hpp>
 #include <kinetiqra/render/Renderer.hpp>
+#include <kinetiqra/render/Texture.hpp>
 #include <kinetiqra/scene/Pose.hpp>
 #include <kinetiqra/scene/Scene.hpp>
 
@@ -118,6 +119,15 @@ private:
     // to the change.
     void rebuild_render_mesh(scene::MeshId mesh);
 
+    // Decodes every image the scene carries and puts it on the device. Called
+    // when the scene is replaced, like the meshes, since an image is as much a
+    // part of a file as its geometry.
+    void rebuild_textures();
+
+    // The material of a section, in the form the renderer wants it, with its
+    // textures already found.
+    [[nodiscard]] render::MaterialDraw material_for(std::uint32_t index) const;
+
     static void on_files_dropped(GLFWwindow* window, int count, const char** paths);
 
     GLFWwindow* window_{nullptr};
@@ -129,6 +139,10 @@ private:
     // Keyed by the mesh handle's index, which is stable for as long as the
     // scene lives and is replaced wholesale along with it.
     std::unordered_map<std::uint32_t, render::RenderMesh> render_meshes_;
+
+    // The same, for pictures. An image that fails to decode simply has no entry
+    // and the material draws with white in its place.
+    std::unordered_map<std::uint32_t, render::Texture> textures_;
 
     core::CommandStack commands_;
 
